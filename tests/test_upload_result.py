@@ -436,3 +436,89 @@ class TestUploadAzureBlob:
             mock_parse.return_value = MagicMock(scheme="azureblob")
             rv = upload_to_result_uri(result_uri=self._URI, content=b"x")
         assert rv is None
+
+
+# ---------------------------------------------------------------------------
+# upload_to_result_uri — GCS path (lines 144-163)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadGCS:
+    _URI = "gs://my-bucket/path/results.json"
+
+    def _make_gcs_storage_mock(self):
+        mock_blob = MagicMock()
+        mock_bucket = MagicMock()
+        mock_bucket.blob.return_value = mock_blob
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage = MagicMock()
+        mock_storage.Client.return_value = mock_client
+        return mock_storage, mock_blob
+
+    def _call(self, uri=None, content=b"payload", **kw):
+        uri = uri or self._URI
+        mock_storage, mock_blob = self._make_gcs_storage_mock()
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with (
+            patch(f"{MOD}.parse_result_uri") as mock_parse,
+            patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }),
+        ):
+            mock_parse.return_value = MagicMock(scheme="gs")
+            upload_to_result_uri(result_uri=uri, content=content, **kw)
+        return mock_storage, mock_blob
+
+    def test_gcs_upload_called(self):
+        _, mock_blob = self._call()
+        mock_blob.upload_from_string.assert_called_once()
+
+    def test_gcs_upload_content_passed(self):
+        _, mock_blob = self._call(content=b"hello-gcs")
+        args, _ = mock_blob.upload_from_string.call_args
+        assert args[0] == b"hello-gcs"
+
+    def test_gcs_upload_content_type_is_json(self):
+        _, mock_blob = self._call()
+        _, kwargs = mock_blob.upload_from_string.call_args
+        assert kwargs.get("content_type") == "application/json"
+
+    def test_gcs_upload_uses_correct_bucket(self):
+        mock_storage, _ = self._call(uri="gs://target-bucket/results.json")
+        mock_storage.Client.return_value.bucket.assert_called_with("target-bucket")
+
+    def test_gcs_upload_uses_correct_blob_path(self):
+        mock_storage, _ = self._call(uri="gs://bucket/path/to/results.json")
+        mock_storage.Client.return_value.bucket.return_value.blob.assert_called_with(
+            "path/to/results.json"
+        )
+
+    def test_gcs_missing_package_raises_runtime_error(self):
+        """Covers lines 152-153: ImportError when google-cloud-storage is not installed."""
+        mock_google_cloud = MagicMock(spec=[])
+        with (
+            patch(f"{MOD}.parse_result_uri") as mock_parse,
+            patch.dict("sys.modules", {
+                "google.cloud": mock_google_cloud,
+                "google.cloud.storage": None,
+            }),
+        ):
+            mock_parse.return_value = MagicMock(scheme="gs")
+            with pytest.raises(RuntimeError, match="google-cloud-storage not installed"):
+                upload_to_result_uri(result_uri=self._URI, content=b"x")
+
+    def test_gcs_invalid_uri_empty_bucket_raises(self):
+        mock_storage, _ = self._make_gcs_storage_mock()
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with (
+            patch(f"{MOD}.parse_result_uri") as mock_parse,
+            patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }),
+        ):
+            mock_parse.return_value = MagicMock(scheme="gs")
+            with pytest.raises(ValueError, match="Invalid gs://"):
+                upload_to_result_uri(result_uri="gs:///no-bucket", content=b"x")

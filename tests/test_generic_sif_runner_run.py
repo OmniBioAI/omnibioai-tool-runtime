@@ -32,6 +32,7 @@ from tools.generic_sif_runner.run import (
     _collect_outputs,
     _env,
     _fetch_from_azure,
+    _fetch_from_gcs,
     _fetch_from_s3,
     _fetch_sif,
     _load_tool_def,
@@ -842,3 +843,605 @@ class TestMainBlock:
                 with pytest.raises(SystemExit) as exc_info:
                     raise SystemExit(main())
         assert exc_info.value.code == 1
+
+
+# ===========================================================================
+# 13. _fetch_sif() — SIF_BASE rewrite (lines 43-47)
+# ===========================================================================
+class TestFetchSifBase:
+
+    def test_sif_base_rewrites_missing_local_to_cloud(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        cached = cache_dir / "tool.sif"
+        cached.write_bytes(b"sif-data")
+        with patch.dict("os.environ", {"SIF_BASE": "s3://base-bucket"}, clear=False):
+            result = _fetch_sif("/nonexistent/tool.sif", cache_dir)
+        assert result == cached
+
+    def test_sif_base_not_applied_to_cloud_uris(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        cached = cache_dir / "tool.sif"
+        cached.write_bytes(b"sif-data")
+        with patch.dict("os.environ", {"SIF_BASE": "s3://base-bucket"}, clear=False):
+            result = _fetch_sif("s3://other-bucket/tool.sif", cache_dir)
+        assert result == cached
+
+    def test_sif_base_prints_rewrite_message(self, tmp_path, capsys):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "tool.sif").write_bytes(b"sif")
+        with patch.dict("os.environ", {"SIF_BASE": "s3://base-bucket"}, clear=False):
+            _fetch_sif("/nonexistent/tool.sif", cache_dir)
+        assert "local SIF not found" in capsys.readouterr().out
+
+
+# ===========================================================================
+# 14. _fetch_sif() — GCS download (lines 73-74)
+# ===========================================================================
+class TestFetchSifGcs:
+
+    def test_gcs_miss_calls_fetch_from_gcs(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        with patch("tools.generic_sif_runner.run._fetch_from_gcs") as mock_gcs:
+            mock_gcs.side_effect = lambda uri, dest: dest.write_bytes(b"sif")
+            result = _fetch_sif("gs://bucket/tool.sif", cache_dir)
+        mock_gcs.assert_called_once()
+
+    def test_gcs_cache_hit_skips_download(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        cached = cache_dir / "tool.sif"
+        cached.write_bytes(b"cached-sif")
+        with patch("tools.generic_sif_runner.run._fetch_from_gcs") as mock_gcs:
+            result = _fetch_sif("gs://bucket/tool.sif", cache_dir)
+        mock_gcs.assert_not_called()
+        assert result == cached
+
+
+# ===========================================================================
+# 15. _fetch_from_gcs() (lines 125-139)
+# ===========================================================================
+def _make_gcs_storage_mock(dest_path: Path):
+    mock_blob = MagicMock()
+    mock_blob.download_to_filename.side_effect = lambda p: Path(p).write_bytes(b"sif-data")
+    mock_bucket = MagicMock()
+    mock_bucket.blob.return_value = mock_blob
+    mock_client = MagicMock()
+    mock_client.bucket.return_value = mock_bucket
+    mock_storage = MagicMock()
+    mock_storage.Client.return_value = mock_client
+    return mock_storage, mock_blob
+
+
+class TestFetchFromGcs:
+
+    def test_gcs_download_success(self, tmp_path):
+        dest = tmp_path / "tool.sif"
+        mock_storage, _ = _make_gcs_storage_mock(dest)
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with patch.dict("sys.modules", {
+            "google.cloud": mock_gcloud,
+            "google.cloud.storage": mock_storage,
+        }):
+            _fetch_from_gcs("gs://my-bucket/path/tool.sif", dest)
+        assert dest.exists()
+
+    def test_gcs_download_uses_correct_bucket(self, tmp_path):
+        dest = tmp_path / "tool.sif"
+        mock_storage, _ = _make_gcs_storage_mock(dest)
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with patch.dict("sys.modules", {
+            "google.cloud": mock_gcloud,
+            "google.cloud.storage": mock_storage,
+        }):
+            _fetch_from_gcs("gs://my-bucket/path/tool.sif", dest)
+        mock_storage.Client.return_value.bucket.assert_called_with("my-bucket")
+
+    def test_gcs_download_uses_correct_blob_path(self, tmp_path):
+        dest = tmp_path / "tool.sif"
+        mock_storage, _ = _make_gcs_storage_mock(dest)
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with patch.dict("sys.modules", {
+            "google.cloud": mock_gcloud,
+            "google.cloud.storage": mock_storage,
+        }):
+            _fetch_from_gcs("gs://my-bucket/path/to/tool.sif", dest)
+        mock_storage.Client.return_value.bucket.return_value.blob.assert_called_with("path/to/tool.sif")
+
+    def test_gcs_download_failure_raises_runtime_error(self, tmp_path):
+        dest = tmp_path / "tool.sif"
+        mock_storage = MagicMock()
+        mock_storage.Client.side_effect = Exception("gcs boom")
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with patch.dict("sys.modules", {
+            "google.cloud": mock_gcloud,
+            "google.cloud.storage": mock_storage,
+        }):
+            with pytest.raises(RuntimeError, match="GCS download failed"):
+                _fetch_from_gcs("gs://my-bucket/tool.sif", dest)
+
+    def test_gcs_error_message_contains_uri(self, tmp_path):
+        dest = tmp_path / "tool.sif"
+        mock_storage = MagicMock()
+        mock_storage.Client.side_effect = Exception("boom")
+        mock_gcloud = MagicMock(storage=mock_storage)
+        with patch.dict("sys.modules", {
+            "google.cloud": mock_gcloud,
+            "google.cloud.storage": mock_storage,
+        }):
+            with pytest.raises(RuntimeError) as exc_info:
+                _fetch_from_gcs("gs://my-bucket/tool.sif", dest)
+        assert "gs://my-bucket/tool.sif" in str(exc_info.value)
+
+
+# ===========================================================================
+# 16. _load_tool_def() — TES URL properly mocked (lines 159-163)
+# ===========================================================================
+class TestLoadToolDefTesUrlFixed:
+
+    def test_tes_url_finds_matching_tool(self):
+        tool_id = "target-tool"
+        tools_list = [
+            {"tool_id": "other-tool"},
+            {"tool_id": tool_id, "slurm": {"image": "/sif/t.sif"}},
+        ]
+        env = {
+            "TOOL_DEF_JSON": "",
+            "TOOL_DEF_PATH": "",
+            "TES_URL": "http://tes:8081",
+            "TOOL_ID": tool_id,
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_r = mock_urlopen.return_value
+                mock_r.__enter__.return_value = mock_r
+                mock_r.read.return_value = json.dumps(tools_list).encode()
+                result = _load_tool_def()
+        assert result["tool_id"] == tool_id
+
+    def test_tes_url_not_found_falls_through_to_error(self):
+        env = {
+            "TOOL_DEF_JSON": "",
+            "TOOL_DEF_PATH": "",
+            "TES_URL": "http://tes:8081",
+            "TOOL_ID": "no-such-tool",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_r = mock_urlopen.return_value
+                mock_r.__enter__.return_value = mock_r
+                mock_r.read.return_value = json.dumps([{"tool_id": "other"}]).encode()
+                with pytest.raises(RuntimeError, match="Cannot load tool definition"):
+                    _load_tool_def()
+
+
+# ===========================================================================
+# 17. main() — Docker fallback when SIF fetch fails (lines 262-264, 381-383)
+# ===========================================================================
+class TestMainDockerFallback:
+
+    def test_docker_used_when_sif_missing_and_docker_image_set(self, tmp_path):
+        td = {
+            "slurm": {
+                "image": "/nonexistent/tool.sif",
+                "command": ["echo", "hi"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc) as mock_run:
+                rc = main()
+        assert rc == 0
+        args = mock_run.call_args[0][0]
+        assert args[0] != "singularity"
+
+    def test_docker_fallback_prints_message(self, tmp_path, capsys):
+        td = {
+            "slurm": {
+                "image": "/nonexistent/tool.sif",
+                "command": ["echo", "hi"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc):
+                main()
+        assert "Docker" in capsys.readouterr().out
+
+    def test_direct_exec_uses_resolved_command(self, tmp_path):
+        td = {
+            "slurm": {
+                "image": "/nonexistent/tool.sif",
+                "command": ["echo", "hello"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc) as mock_run:
+                main()
+        args = mock_run.call_args[0][0]
+        assert "echo" in args
+
+
+# ===========================================================================
+# 18. main() — arch mismatch forces Docker (lines 375-376)
+# ===========================================================================
+class TestMainArchMismatch:
+
+    def test_arm64_sif_on_x86_uses_docker(self, tmp_path):
+        sif = tmp_path / "tool_arm64.sif"
+        sif.write_bytes(b"fake")
+        td = {
+            "slurm": {
+                "image": str(sif),
+                "command": ["echo", "hi"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc) as mock_run:
+                with patch("platform.machine", return_value="x86_64"):
+                    rc = main()
+        assert rc == 0
+        args = mock_run.call_args[0][0]
+        assert args[0] != "singularity"
+
+    def test_amd64_sif_on_aarch64_uses_docker(self, tmp_path):
+        sif = tmp_path / "tool_amd64.sif"
+        sif.write_bytes(b"fake")
+        td = {
+            "slurm": {
+                "image": str(sif),
+                "command": ["echo", "hi"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc) as mock_run:
+                with patch("platform.machine", return_value="aarch64"):
+                    rc = main()
+        assert rc == 0
+        args = mock_run.call_args[0][0]
+        assert args[0] != "singularity"
+
+    def test_arch_mismatch_prints_message(self, tmp_path, capsys):
+        sif = tmp_path / "tool_arm64.sif"
+        sif.write_bytes(b"fake")
+        td = {
+            "slurm": {
+                "image": str(sif),
+                "command": ["echo", "hi"],
+                "outputs": [],
+                "docker_image": "my-image:latest",
+            }
+        }
+        env = _env_with_tool_def(td, work_dir=str(tmp_path))
+        mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch("subprocess.run", return_value=mock_proc):
+                with patch("platform.machine", return_value="x86_64"):
+                    main()
+        assert "arch mismatch" in capsys.readouterr().out
+
+
+# ===========================================================================
+# 19. main() — S3 input download (lines 273-307)
+# ===========================================================================
+def _make_s3_mock():
+    mock_boto3 = MagicMock()
+    mock_s3_client = MagicMock()
+    mock_boto3.client.return_value = mock_s3_client
+    mock_paginator = MagicMock()
+    mock_s3_client.get_paginator.return_value = mock_paginator
+    mock_paginator.paginate.return_value = [
+        {"Contents": [{"Key": "mydata/file1.fastq"}]}
+    ]
+    return mock_boto3, mock_s3_client
+
+
+class TestMainS3Input:
+
+    def test_s3_single_file_input_downloaded(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "s3://bucket/data/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_boto3, mock_s3_client = _make_s3_mock()
+        mock_s3_client.download_file.return_value = None
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+        mock_s3_client.download_file.assert_called_once_with(
+            "bucket", "data/file.bam", str(tmp_path / "file.bam")
+        )
+
+    def test_s3_directory_input_downloaded_trailing_slash(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"indir": "s3://bucket/mydata/"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_boto3, mock_s3_client = _make_s3_mock()
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+        mock_s3_client.get_paginator.assert_called_with("list_objects_v2")
+
+    def test_s3_directory_input_no_suffix_treated_as_dir(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"indir": "s3://bucket/mydata"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_boto3, mock_s3_client = _make_s3_mock()
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+        mock_s3_client.get_paginator.assert_called_with("list_objects_v2")
+
+    def test_s3_download_failure_falls_back_to_original_uri(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "s3://bucket/data/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_boto3, mock_s3_client = _make_s3_mock()
+        mock_s3_client.download_file.side_effect = Exception("S3 error")
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+
+    def test_s3_dir_download_failure_falls_back(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"indir": "s3://bucket/mydata/"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_boto3 = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_boto3.client.return_value = mock_s3_client
+        mock_s3_client.get_paginator.side_effect = Exception("paginator error")
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+
+
+# ===========================================================================
+# 20. main() — Azure input download (lines 309-334)
+# ===========================================================================
+class TestMainAzureInput:
+
+    def _make_azure_input_mocks(self, data=b"bam-data"):
+        mock_blob_data = MagicMock()
+        mock_blob_data.readall.return_value = data
+        mock_bc = MagicMock()
+        mock_bc.download_blob.return_value = mock_blob_data
+        mock_svc = MagicMock()
+        mock_svc.get_blob_client.return_value = mock_bc
+        mock_bsc_cls = MagicMock()
+        mock_bsc_cls.from_connection_string.return_value = mock_svc
+        mock_bsc_cls.return_value = mock_svc
+        return mock_bsc_cls, mock_svc
+
+    def test_azure_input_downloaded_with_connection_string(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "azureblob://account/container/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        env["AZURE_STORAGE_CONNECTION_STRING"] = "DefaultEndpointsProtocol=https;AccountName=x"
+        mock_bsc_cls, _ = self._make_azure_input_mocks()
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "azure.storage.blob": MagicMock(BlobServiceClient=mock_bsc_cls),
+                "azure.identity": MagicMock(),
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+        mock_bsc_cls.from_connection_string.assert_called_once()
+
+    def test_azure_input_downloaded_with_managed_identity(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "azureblob://account/container/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_bsc_cls, mock_svc = self._make_azure_input_mocks()
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "azure.storage.blob": MagicMock(BlobServiceClient=mock_bsc_cls),
+                "azure.identity": MagicMock(DefaultAzureCredential=MagicMock()),
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+
+    def test_azure_input_download_failure_falls_back(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "azureblob://account/container/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_bsc_cls = MagicMock(side_effect=Exception("azure error"))
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "azure.storage.blob": MagicMock(BlobServiceClient=mock_bsc_cls),
+                "azure.identity": MagicMock(),
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+
+
+# ===========================================================================
+# 21. main() — GCS input download (lines 336-352)
+# ===========================================================================
+class TestMainGCSInput:
+
+    def _make_gcs_input_mock():
+        mock_blob = MagicMock()
+        mock_bucket = MagicMock()
+        mock_bucket.blob.return_value = mock_blob
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage = MagicMock()
+        mock_storage.Client.return_value = mock_client
+        return mock_storage, mock_blob
+
+    def test_gcs_input_downloaded(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "gs://bucket/data/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_storage = MagicMock()
+        mock_gcloud = MagicMock(storage=mock_storage)
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+        mock_storage.Client.return_value.bucket.assert_called_with("bucket")
+
+    def test_gcs_input_download_failure_falls_back(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "gs://bucket/data/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_storage = MagicMock()
+        mock_storage.Client.side_effect = Exception("gcs error")
+        mock_gcloud = MagicMock(storage=mock_storage)
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        assert rc == 0
+
+    def test_gcs_input_download_prints_message(self, tmp_path, capsys):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        inputs = {"infile": "gs://bucket/data/file.bam"}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), inputs_json=json.dumps(inputs))
+        mock_storage = MagicMock()
+        mock_gcloud = MagicMock(storage=mock_storage)
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    main()
+        assert "gs://" in capsys.readouterr().out
+
+
+# ===========================================================================
+# 22. main() — GCS result upload (lines 445-463)
+# ===========================================================================
+class TestMainGCSResultUpload:
+
+    def _run_with_gcs_upload(self, tmp_path, result_uri):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), result_uri=result_uri)
+        mock_blob = MagicMock()
+        mock_bucket = MagicMock()
+        mock_bucket.blob.return_value = mock_blob
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage = MagicMock()
+        mock_storage.Client.return_value = mock_client
+        mock_gcloud = MagicMock(storage=mock_storage)
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    rc = main()
+        return rc, mock_blob
+
+    def test_gcs_result_upload_called(self, tmp_path):
+        rc, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
+        assert rc == 0
+        mock_blob.upload_from_string.assert_called_once()
+
+    def test_gcs_result_upload_content_type_is_json(self, tmp_path):
+        _, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
+        _, kwargs = mock_blob.upload_from_string.call_args
+        assert kwargs.get("content_type") == "application/json"
+
+    def test_gcs_result_upload_content_is_bytes(self, tmp_path):
+        _, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
+        args, _ = mock_blob.upload_from_string.call_args
+        assert isinstance(args[0], bytes)
+
+    def test_gcs_result_upload_prints_confirmation(self, tmp_path, capsys):
+        self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
+        assert "uploaded" in capsys.readouterr().out
+
+    def test_gcs_result_upload_uses_correct_bucket(self, tmp_path):
+        sif = tmp_path / "tool.sif"
+        sif.write_bytes(b"fake")
+        td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
+        env = _env_with_tool_def(td, work_dir=str(tmp_path), result_uri="gs://my-bucket/path/results.json")
+        mock_storage = MagicMock()
+        mock_gcloud = MagicMock(storage=mock_storage)
+        mock_proc = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch.dict("os.environ", env, clear=True):
+            with patch.dict("sys.modules", {
+                "google.cloud": mock_gcloud,
+                "google.cloud.storage": mock_storage,
+            }):
+                with patch("subprocess.run", return_value=mock_proc):
+                    main()
+        mock_storage.Client.return_value.bucket.assert_called_with("my-bucket")

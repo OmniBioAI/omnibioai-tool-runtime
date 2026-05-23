@@ -267,3 +267,35 @@ class TestMainBlock:
 
             runpy.run_module("omni_tool_runtime.run", run_name="__main__", alter_sys=False)
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# _run() helper coverage (lines 31-40)
+# ---------------------------------------------------------------------------
+
+
+class TestRunHelper:
+    """Exercises the _run() helper directly to cover lines 31-40."""
+
+    def test_run_with_module_returns_zero(self):
+        mod = _make_mod(main_return=0)
+        result = _run({"TOOL_ID": "tool-1"}, module=mod)
+        assert result == 0
+
+    def test_run_with_module_calls_tool_main(self):
+        mod = _make_mod(main_return=0)
+        _run({"TOOL_ID": "tool-1"}, module=mod)
+        mod.main.assert_called_once()
+
+    def test_run_with_module_propagates_nonzero_return(self):
+        mod = _make_mod(main_return=3)
+        result = _run({"TOOL_ID": "tool-1"}, module=mod)
+        assert result == 3
+
+    def test_run_without_module_returns_tuple(self):
+        rc, mock_import = _run({"TOOL_ID": "tool-1"})
+        assert rc == 2
+
+    def test_run_without_module_mock_import_was_called(self):
+        _, mock_import = _run({"TOOL_ID": "tool-1"})
+        mock_import.assert_called_once_with("tools.tool-1.run")
