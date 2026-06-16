@@ -12,8 +12,8 @@ OmniBioAI’s Tool Execution Service (TES) to run individual tools across **mult
 * Local Docker execution
 * AWS Batch
 * Azure Batch
-* (future) Kubernetes Jobs
-* (future) TES-compatible HPC schedulers
+* Kubernetes Jobs
+* Slurm / HPC via TES adapters
 
 The runtime provides a **strict execution contract** so that:
 
@@ -92,6 +92,19 @@ omnibioai-tool-runtime/
 
 ---
 
+## Testing
+
+```bash
+cd ~/Desktop/machine/omnibioai-tool-runtime
+pytest tests/ -v --cov=.
+
+# 100% coverage
+# Covers: upload_result, S3 uploader, Azure uploader,
+#         echo_test tool, run lifecycle
+```
+
+---
+
 ## Example Tool: `echo_test`
 
 This is the **reference implementation** for all future tools.
@@ -157,7 +170,14 @@ Adapters **never upload results themselves**.
 From repository root:
 
 ```bash
-docker build -t man4ish/omnibioai-tool-runtime:latest .
+# Build from ecosystem root (required — COPY needs omnibioai-tool-runtime/)
+cd ~/Desktop/machine
+docker build \
+  -t ghcr.io/man4ish/omnibioai-tool-runtime:latest \
+  -f omnibioai-tool-runtime/Dockerfile \
+  .
+
+docker push ghcr.io/man4ish/omnibioai-tool-runtime:latest
 ```
 
 Verify:
@@ -176,7 +196,7 @@ docker run --rm \
   -e RUN_ID=local-test-1 \
   -e INPUTS_JSON='{"text":"hello world"}' \
   -e RESOURCES_JSON='{}' \
-  man4ish/omnibioai-tool-runtime:latest
+  ghcr.io/man4ish/omnibioai-tool-runtime:latest
 ```
 
 Expected:
@@ -190,7 +210,7 @@ Expected:
 
 ### Job Definition
 
-* Image: `man4ish/omnibioai-tool-runtime:latest`
+* Image: `ghcr.io/man4ish/omnibioai-tool-runtime:latest`
 * Command override:
 
 ```json
@@ -208,7 +228,7 @@ Expected:
 
 ### Task Settings
 
-* Image: `man4ish/omnibioai-tool-runtime:latest`
+* Image: `ghcr.io/man4ish/omnibioai-tool-runtime:latest`
 * Command:
 
 ```bash
@@ -227,14 +247,14 @@ python -m tools.echo_test.run
 ### Docker Hub
 
 ```bash
-docker push man4ish/omnibioai-tool-runtime:latest
+docker push ghcr.io/man4ish/omnibioai-tool-runtime:latest
 ```
 
 ### Azure Container Registry
 
 ```bash
 az acr login --name YOUR_ACR
-docker tag man4ish/omnibioai-tool-runtime:latest YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
+docker tag ghcr.io/man4ish/omnibioai-tool-runtime:latest YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
 docker push YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
 ```
 
@@ -272,7 +292,7 @@ job_definition_map:
 ```yaml
 tools:
   my_new_tool:
-    image: "man4ish/omnibioai-tool-runtime:latest"
+    image: "ghcr.io/man4ish/omnibioai-tool-runtime:latest"
     command: ["python", "-m", "tools.my_new_tool.run"]
 ```
 
@@ -281,45 +301,19 @@ tools:
 ## Current State
 
 ### Implemented
+- Unified runtime image embedded in all tool Docker images
+- AWS Batch support (S3 result upload)
+- Azure Batch support (Azure Blob result upload)
+- Kubernetes Job support
+- Deterministic execution contract
+- Reference `echo_test` tool
+- 100% test coverage
 
-* Unified runtime image
-* AWS Batch support
-* Azure Batch support
-* S3 + Azure Blob uploads
-* Deterministic execution contract
-* Reference `echo_test` tool
-
-### Intentionally Missing (by design)
-
-* No workflow orchestration
-* No retry logic
-* No state machine
-* No scheduling policy
-
----
-
-## Planned Future Enhancements
-
-### Short-term
-
-* Tool generator CLI (`omnibioai tool new`)
-* Structured logging
-* Result size validation
-* Runtime version pinning
-
-### Medium-term
-
-* Kubernetes Job adapter support
-* Streaming stdout to object storage
-* Tool-level resource enforcement
-* Tool metadata introspection
-
-### Long-term
-
-* Signed result manifests
-* Provenance hashing
-* Deterministic replay support
-* Cross-cloud artifact mirroring
+### Intentionally not included (by design)
+- No workflow orchestration
+- No retry logic
+- No state machine
+- No scheduling policy
 
 ---
 
@@ -335,6 +329,16 @@ That’s a feature.
 * One job → one tool → one result
 
 Everything complex belongs **above** this layer.
+
+---
+
+## Related Services
+
+| Service | Role |
+|---------|------|
+| `omnibioai-tes` | Injects env vars and submits jobs using this runtime |
+| `omnibioai-tool-images` | Embeds this runtime in every tool Docker image |
+| `omnibioai-studio` | Orchestrates execution backends that run this runtime |
 
 ---
 
