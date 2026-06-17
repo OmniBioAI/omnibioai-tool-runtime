@@ -105,3 +105,4 @@ obsolete/
 *.key
 *.pfx
 *.p12
+*.egg-info/
