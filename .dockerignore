@@ -3,8 +3,8 @@ __pycache__/
 *.pyo
 *.pyd
 *.egg-info/
-dist/
-build/
+**/dist
+**/build
 .venv/
 .env
 .DS_Store
@@ -17,3 +17,15 @@ __pycache__
 *.git
 node_modules
 *.env
+.claude
+.coverage
+.pytest_cache
+coverage.json
+.pytest_cache/
+**/.nextflow
+**/nf-test
+**/.nf-test
+htmlcov/
+.benchmarks/
+perf_baseline.json
+**/node_modules
