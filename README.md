@@ -173,11 +173,11 @@ From repository root:
 # Build from ecosystem root (required — COPY needs omnibioai-tool-runtime/)
 cd ~/Desktop/machine
 docker build \
-  -t ghcr.io/man4ish/omnibioai-tool-runtime:latest \
+  -t ghcr.io/omnibioai/omnibioai-tool-runtime:latest \
   -f omnibioai-tool-runtime/Dockerfile \
   .
 
-docker push ghcr.io/man4ish/omnibioai-tool-runtime:latest
+docker push ghcr.io/omnibioai/omnibioai-tool-runtime:latest
 ```
 
 Verify:
@@ -196,7 +196,7 @@ docker run --rm \
   -e RUN_ID=local-test-1 \
   -e INPUTS_JSON='{"text":"hello world"}' \
   -e RESOURCES_JSON='{}' \
-  ghcr.io/man4ish/omnibioai-tool-runtime:latest
+  ghcr.io/omnibioai/omnibioai-tool-runtime:latest
 ```
 
 Expected:
@@ -210,7 +210,7 @@ Expected:
 
 ### Job Definition
 
-* Image: `ghcr.io/man4ish/omnibioai-tool-runtime:latest`
+* Image: `ghcr.io/omnibioai/omnibioai-tool-runtime:latest`
 * Command override:
 
 ```json
@@ -228,7 +228,7 @@ Expected:
 
 ### Task Settings
 
-* Image: `ghcr.io/man4ish/omnibioai-tool-runtime:latest`
+* Image: `ghcr.io/omnibioai/omnibioai-tool-runtime:latest`
 * Command:
 
 ```bash
@@ -247,14 +247,14 @@ python -m tools.echo_test.run
 ### Docker Hub
 
 ```bash
-docker push ghcr.io/man4ish/omnibioai-tool-runtime:latest
+docker push ghcr.io/omnibioai/omnibioai-tool-runtime:latest
 ```
 
 ### Azure Container Registry
 
 ```bash
 az acr login --name YOUR_ACR
-docker tag ghcr.io/man4ish/omnibioai-tool-runtime:latest YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
+docker tag ghcr.io/omnibioai/omnibioai-tool-runtime:latest YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
 docker push YOUR_ACR.azurecr.io/omnibioai-tool-runtime:latest
 ```
 
@@ -292,7 +292,7 @@ job_definition_map:
 ```yaml
 tools:
   my_new_tool:
-    image: "ghcr.io/man4ish/omnibioai-tool-runtime:latest"
+    image: "ghcr.io/omnibioai/omnibioai-tool-runtime:latest"
     command: ["python", "-m", "tools.my_new_tool.run"]
 ```
 
