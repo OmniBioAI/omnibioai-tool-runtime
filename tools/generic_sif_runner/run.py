@@ -25,15 +25,22 @@ def _resolve_env_refs(s: str) -> str:
     return re.sub(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)", _replace, s)
 
 
-def _fetch_sif(sif_uri: str, cache_dir: Path) -> Path:
+def _fetch_sif(sif_uri: str, cache_dir: Path) -> Path | str:
     """
     Resolve SIF image to a local path.
     Supports:
       /local/path/fastqc_arm64.sif        — Slurm/DGX
       s3://bucket/fastqc_arm64.sif        — AWS
       azureblob://account/container/name  — Azure
+      docker://registry/image:tag         — pulled natively by singularity
     """
     uri = _resolve_env_refs(sif_uri)
+
+    # docker:// URIs are handled natively by `singularity exec` — no local
+    # fetch/cache needed. Must return the raw string (not Path(), which
+    # collapses "//" and would corrupt the URI scheme).
+    if uri.startswith("docker://"):
+        return uri
 
     # ✅ If local path doesn't exist but SIF_BASE is set
     # → rewrite to S3/Azure URI automatically

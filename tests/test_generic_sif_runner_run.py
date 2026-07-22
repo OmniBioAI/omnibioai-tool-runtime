@@ -211,6 +211,26 @@ class TestFetchSif:
             result = _fetch_sif("${SIF_PATH}", tmp_path / "cache")
         assert result == sif
 
+    # --- docker:// passthrough ---
+    def test_docker_uri_returned_as_is(self, tmp_path):
+        uri = "docker://quay.io/biocontainers/bwa:0.7.17--h7132678_9"
+        result = _fetch_sif(uri, tmp_path)
+        assert result == uri
+
+    def test_docker_uri_returns_str_not_path(self, tmp_path):
+        result = _fetch_sif("docker://quay.io/biocontainers/bwa:latest", tmp_path)
+        assert isinstance(result, str)
+
+    def test_docker_uri_not_collapsed(self, tmp_path):
+        # Path() collapses "//" — guard against regressing to that
+        result = _fetch_sif("docker://quay.io/biocontainers/bwa:latest", tmp_path)
+        assert result.startswith("docker://")
+
+    def test_docker_uri_skips_cache_dir_creation(self, tmp_path):
+        cache_dir = tmp_path / "unused_cache"
+        _fetch_sif("docker://quay.io/biocontainers/bwa:latest", cache_dir)
+        assert not cache_dir.exists()
+
 
 # ===========================================================================
 # 4. _fetch_from_s3()
