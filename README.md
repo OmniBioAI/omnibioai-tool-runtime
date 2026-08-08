@@ -12,6 +12,7 @@ OmniBioAI’s Tool Execution Service (TES) to run individual tools across **mult
 * Local Docker execution
 * AWS Batch
 * Azure Batch
+* GCP Batch (`gs://` results upload)
 * Kubernetes Jobs
 * Slurm / HPC via TES adapters
 
@@ -78,14 +79,22 @@ omnibioai-tool-runtime/
 ├── pyproject.toml
 ├── omni_tool_runtime/
 │   ├── __init__.py
+│   ├── contract.py            # ToolContract + read_contract_from_env() —
+│   │                          # the code implementing "Execution Contract" below
+│   ├── run.py                 # Generic entrypoint: resolves TOOL_ID ->
+│   │                          # tools.{tool_id}.run and calls its main()
 │   ├── result_uri.py          # URI parsing & dispatch
 │   ├── upload_result.py       # Unified upload logic
 │   └── uploaders/
 │       ├── s3_uploader.py
 │       └── azureblob_uploader.py
 ├── tools/
-│   └── echo_test/
-│       ├── __init__.py
+│   ├── echo_test/             # Minimal reference implementation — see below
+│   │   ├── __init__.py
+│   │   └── run.py
+│   ├── generic_sif_runner/    # The real, production tool — embedded in every
+│   │   └── run.py             # ECR/ACR/GCR image (see omnibioai-tes's README)
+│   └── workflow_runner/
 │       └── run.py
 └── tests/
 ```
@@ -98,16 +107,21 @@ omnibioai-tool-runtime/
 cd ~/Desktop/machine/omnibioai-tool-runtime
 pytest tests/ -v --cov=.
 
-# 100% coverage
+# 99% coverage (verified 2026-08-07; 371 tests. Two lines in
+# generic_sif_runner/run.py are the only gap)
 # Covers: upload_result, S3 uploader, Azure uploader,
-#         echo_test tool, run lifecycle
+#         echo_test/generic_sif_runner/workflow_runner tools, run lifecycle
 ```
 
 ---
 
 ## Example Tool: `echo_test`
 
-This is the **reference implementation** for all future tools.
+This is a **minimal reference implementation** — small enough to read
+end-to-end as a template for a new tool. The real, production tool
+embedded in every ECR/ACR/GCR image is `tools/generic_sif_runner/` (see
+[omnibioai-tes's README](../omnibioai-tes#generic_sif_runner)); a third,
+`tools/workflow_runner/`, also ships here.
 
 ### Behavior
 
@@ -154,6 +168,7 @@ if __name__ == "__main__":
 | ------- | ------------------------------------------------- |
 | AWS     | `s3://bucket/prefix/run_id/results.json`          |
 | Azure   | `azureblob://account/container/path/results.json` |
+| GCP     | `gs://bucket/prefix/run_id/results.json` (via `google.cloud.storage`) |
 
 The runtime:
 
@@ -304,10 +319,13 @@ tools:
 - Unified runtime image embedded in all tool Docker images
 - AWS Batch support (S3 result upload)
 - Azure Batch support (Azure Blob result upload)
-- Kubernetes Job support
+- GCP Batch support (GCS result upload)
+- Kubernetes Job support — the same image runs unmodified as a K8s Job's
+  container; no Kubernetes-specific code lives in this repo
 - Deterministic execution contract
-- Reference `echo_test` tool
-- 100% test coverage
+- Reference `echo_test` tool, plus the production `generic_sif_runner`
+  and `workflow_runner` tools
+- 99% test coverage
 
 ### Intentionally not included (by design)
 - No workflow orchestration
