@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from omni_tool_runtime.safe_log import hash_value, safe_cmd_summary
 from omni_tool_runtime.upload_result import upload_to_result_uri
 
 
@@ -287,34 +288,36 @@ def main() -> int:
                 # Download directory
                 local_dir = work_dir / Path(key_path.rstrip("/")).name
                 local_dir.mkdir(parents=True, exist_ok=True)
-                print(f"[generic_sif_runner] downloading dir {key}: {val} → {local_dir}")
+                print(f"[generic_sif_runner] downloading input '{key}' (s3, dir, ref={hash_value(val)})")
                 try:
                     s3 = boto3.client("s3")
                     paginator = s3.get_paginator("list_objects_v2")
+                    n_files = 0
                     for page in paginator.paginate(Bucket=bucket, Prefix=key_path):
                         for obj in page.get("Contents", []):
                             obj_key = obj["Key"]
                             fname = Path(obj_key).name
                             if fname:
                                 s3.download_file(bucket, obj_key, str(local_dir / fname))
-                                print(f"[generic_sif_runner] downloaded: {fname}")
+                                n_files += 1
+                    print(f"[generic_sif_runner] downloaded input '{key}': {n_files} file(s)")
                     local_inputs[key] = str(local_dir)
                 except Exception as e:
-                    print(f"[generic_sif_runner] S3 dir download failed: {e}")
+                    print(f"[generic_sif_runner] download failed for input '{key}' (s3, dir): {type(e).__name__}")
                     local_inputs[key] = val
             else:
                 local_file = work_dir / Path(val).name
-                print(f"[generic_sif_runner] downloading input {key}: {val} → {local_file}")
+                print(f"[generic_sif_runner] downloading input '{key}' (s3, file, ref={hash_value(val)})")
                 try:
                     boto3.client("s3").download_file(bucket, key_path, str(local_file))
                     local_inputs[key] = str(local_file)
-                    print(f"[generic_sif_runner] downloaded: {local_file}")
+                    print(f"[generic_sif_runner] downloaded input '{key}'")
                 except Exception as e:
-                    print(f"[generic_sif_runner] S3 download failed for {val}: {e}")
+                    print(f"[generic_sif_runner] download failed for input '{key}' (s3, file): {type(e).__name__}")
                     local_inputs[key] = val
         elif isinstance(val, str) and val.startswith("azureblob://"):
             local_file = work_dir / Path(val).name
-            print(f"[generic_sif_runner] downloading input {key}: {val} → {local_file}")
+            print(f"[generic_sif_runner] downloading input '{key}' (azureblob, ref={hash_value(val)})")
             try:
                 from urllib.parse import urlparse
                 u = urlparse(val)
@@ -335,13 +338,13 @@ def main() -> int:
                 bc = svc.get_blob_client(container=container, blob=blob)
                 local_file.write_bytes(bc.download_blob().readall())
                 local_inputs[key] = str(local_file)
-                print(f"[generic_sif_runner] downloaded: {local_file}")
+                print(f"[generic_sif_runner] downloaded input '{key}'")
             except Exception as e:
-                print(f"[generic_sif_runner] Azure download failed for {val}: {e}")
+                print(f"[generic_sif_runner] download failed for input '{key}' (azureblob): {type(e).__name__}")
                 local_inputs[key] = val
         elif isinstance(val, str) and val.startswith("gs://"):
             local_file = work_dir / Path(val).name
-            print(f"[generic_sif_runner] downloading input {key}: {val} → {local_file}")
+            print(f"[generic_sif_runner] downloading input '{key}' (gs, ref={hash_value(val)})")
             try:
                 from google.cloud import storage as gcs_storage
                 from urllib.parse import urlparse
@@ -353,10 +356,10 @@ def main() -> int:
                 blob = bucket.blob(blob_path)
                 blob.download_to_filename(str(local_file))
                 local_inputs[key] = str(local_file)
-                print(f"[generic_sif_runner] downloaded: {local_file}")
+                print(f"[generic_sif_runner] downloaded input '{key}'")
             except Exception as e:
-                print(f"[generic_sif_runner] GCS download failed for {val}: {e}")
-                local_inputs[key] = val        
+                print(f"[generic_sif_runner] download failed for input '{key}' (gs): {type(e).__name__}")
+                local_inputs[key] = val
         else:
             local_inputs[key] = val
     inputs = local_inputs
@@ -385,7 +388,11 @@ def main() -> int:
     if use_docker:
         # Run tool directly (we ARE inside the tool container on Fargate!)
         # No Docker-in-Docker needed - just exec the command directly
-        print(f"[generic_sif_runner] running directly (no singularity): {resolved_cmd}")
+        _cmd_summary = safe_cmd_summary(resolved_cmd)
+        print(
+            f"[generic_sif_runner] running directly (no singularity): "
+            f"executable={_cmd_summary['executable']} argc={_cmd_summary['argc']} ref={_cmd_summary['ref']}"
+        )
         singularity_cmd = resolved_cmd
         local_sif = None  # No SIF needed for direct exec
     else:
@@ -412,7 +419,11 @@ def main() -> int:
                     f"{parent}:{parent}:ro"
                 )
 
-    print(f"[generic_sif_runner] cmd: {' '.join(singularity_cmd)}")
+    _singularity_summary = safe_cmd_summary(singularity_cmd)
+    print(
+        f"[generic_sif_runner] cmd: executable={_singularity_summary['executable']} "
+        f"argc={_singularity_summary['argc']} ref={_singularity_summary['ref']}"
+    )
 
     proc = subprocess.run(
         singularity_cmd,
@@ -425,6 +436,11 @@ def main() -> int:
     stderr   = proc.stderr or ""
     ok       = proc.returncode == 0
 
+    # Boundary (PHI P1-4 Phase 4): everything below is the THIRD-PARTY tool's
+    # own stdout/stderr, not something OmniBioAI constructs. It is passed
+    # through verbatim for debuggability; the runtime does not control or
+    # redact what the underlying scientific tool chooses to print, and it
+    # may itself emit sample/patient-adjacent content. See final report.
     print(stdout)
     if stderr:
         print(stderr, file=sys.stderr)
@@ -444,7 +460,22 @@ def main() -> int:
     }
 
     body = json.dumps(result_obj, indent=2).encode("utf-8")
-    print(body.decode("utf-8"))
+
+    # PHI-safe: log a structural summary only. `outputs` may contain
+    # sample/patient-derived file paths and stdout/stderr tails may embed
+    # third-party tool output (see boundary note above) — the full
+    # `result_obj`/`body` still goes to RESULT_URI unredacted, which is the
+    # tool's intended, access-controlled output channel.
+    log_summary = {
+        "ok":           ok,
+        "tool_id":      tool_id,
+        "run_id":       run_id,
+        "exit_code":    proc.returncode,
+        "output_keys":  list(outputs.keys()),
+        "stdout_len":   len(stdout),
+        "stderr_len":   len(stderr),
+    }
+    print(json.dumps(log_summary, indent=2))
 
     # ── Upload result ─────────────────────────────────────────
     if result_uri:

@@ -1384,6 +1384,7 @@ class TestMainGCSInput:
         assert rc == 0
 
     def test_gcs_input_download_prints_message(self, tmp_path, capsys):
+        """The download-progress log names the input key, not the raw gs:// value (PHI-safe)."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1399,7 +1400,9 @@ class TestMainGCSInput:
             }):
                 with patch("subprocess.run", return_value=mock_proc):
                     main()
-        assert "gs://" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "downloading input 'infile'" in out
+        assert "gs://bucket/data/file.bam" not in out
 
 
 # ===========================================================================

@@ -158,12 +158,14 @@ class TestMissingText:
         out = json.loads(capsys.readouterr().out)
         assert "missing inputs.text" in out["error"]
 
-    def test_inputs_echoed_back_in_error(self, capsys):
+    def test_inputs_not_echoed_back_in_log(self, capsys):
+        """PHI-safe: the raw inputs dict must never appear in the printed log."""
         payload = {"foo": "bar"}
         with patch.dict("os.environ", _env(inputs_json=json.dumps(payload)), clear=True):
             main()
         out = json.loads(capsys.readouterr().out)
-        assert out["inputs"] == payload
+        assert "inputs" not in out
+        assert out["input_summary"] == {"foo": {"type": "str", "len": 3, "ref": out["input_summary"]["foo"]["ref"]}}
 
     def test_tool_id_present_in_missing_text_response(self, capsys):
         with patch.dict("os.environ", _env(tool_id="t2", inputs_json="{}"), clear=True):
@@ -200,11 +202,28 @@ class TestHappyPathLocalMode:
         out = json.loads(capsys.readouterr().out)
         assert out["ok"] is True
 
-    def test_echo_matches_input_text(self, capsys):
-        with patch.dict("os.environ", _env(inputs_json='{"text": "world"}'), clear=True):
-            main()
-        out = json.loads(capsys.readouterr().out)
-        assert out["results"]["echo"] == "world"
+    def test_echo_matches_input_text(self):
+        """The raw echoed value goes to the upload (result) channel, never to the log."""
+        with patch.dict(
+            "os.environ", _env(inputs_json='{"text": "world"}', result_uri="s3://b/k"), clear=True
+        ):
+            with patch("tools.echo_test.run.upload_to_result_uri") as mock_upload:
+                main()
+        _, kwargs = mock_upload.call_args
+        uploaded = json.loads(kwargs["content"].decode("utf-8"))
+        assert uploaded["results"]["echo"] == "world"
+
+    def test_echo_value_not_in_printed_log(self, capsys):
+        """PHI-safe: the raw echoed value must never appear in the printed log."""
+        with patch.dict(
+            "os.environ", _env(inputs_json='{"text": "world"}', result_uri="s3://b/k"), clear=True
+        ):
+            with patch("tools.echo_test.run.upload_to_result_uri"):
+                main()
+        out = capsys.readouterr().out
+        assert "world" not in out
+        parsed = json.loads(out)
+        assert parsed["echo_summary"] == {"type": "str", "len": 5, "ref": parsed["echo_summary"]["ref"]}
 
     def test_tool_id_in_response(self, capsys):
         with patch.dict("os.environ", _env(tool_id="echo-tool"), clear=True):
@@ -219,10 +238,12 @@ class TestHappyPathLocalMode:
         assert out["run_id"] == "run-77"
 
     def test_results_key_present(self, capsys):
+        """The printed log has a structural echo_summary, not the raw `results` block."""
         with patch.dict("os.environ", _env(), clear=True):
             main()
         out = json.loads(capsys.readouterr().out)
-        assert "results" in out
+        assert "echo_summary" in out
+        assert "results" not in out
 
     def test_upload_not_called_in_local_mode(self):
         with patch.dict("os.environ", _env(result_uri=""), clear=True):
@@ -236,14 +257,14 @@ class TestHappyPathLocalMode:
             main()
         out = json.loads(capsys.readouterr().out)
         assert out["ok"] is True
-        assert out["results"]["echo"] == ""
+        assert out["echo_summary"] == {"type": "str", "len": 0, "ref": out["echo_summary"]["ref"]}
 
     def test_numeric_text_value(self, capsys):
         with patch.dict("os.environ", _env(inputs_json='{"text": 42}'), clear=True):
             main()
         out = json.loads(capsys.readouterr().out)
         assert out["ok"] is True
-        assert out["results"]["echo"] == 42
+        assert out["echo_summary"] == {"type": "int"}
 
     def test_output_is_valid_json(self, capsys):
         with patch.dict("os.environ", _env(), clear=True):
@@ -300,13 +321,17 @@ class TestHappyPathCloudMode:
         decoded = json.loads(kwargs["content"].decode("utf-8"))
         assert decoded["ok"] is True
 
-    def test_upload_content_matches_printed_output(self, capsys):
+    def test_upload_content_differs_from_printed_log(self, capsys):
+        """PHI-safe: the uploaded (raw) content and the printed (redacted) log must differ."""
         with patch.dict("os.environ", _env(result_uri="s3://b/k"), clear=True):
             with patch("tools.echo_test.run.upload_to_result_uri") as mock_upload:
                 main()
         printed = capsys.readouterr().out.strip()
         _, kwargs = mock_upload.call_args
-        assert kwargs["content"] == printed.encode("utf-8")
+        assert kwargs["content"] != printed.encode("utf-8")
+        uploaded = json.loads(kwargs["content"].decode("utf-8"))
+        assert uploaded["results"]["echo"] == "hello"  # raw value present in the upload channel
+        assert "hello" not in printed  # but never in the printed log
 
     def test_azure_uri_also_triggers_upload(self):
         uri = "azureblob://account/container/blob.json"

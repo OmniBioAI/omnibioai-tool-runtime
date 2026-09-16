@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 
+from omni_tool_runtime.safe_log import describe_inputs, describe_value
 from omni_tool_runtime.upload_result import upload_to_result_uri
 
 
@@ -29,6 +30,13 @@ def main() -> int:
             "run_id": run_id,
             "inputs": inputs,
         }
+        log_obj = {
+            "ok": False,
+            "error": "missing inputs.text",
+            "tool_id": tool_id,
+            "run_id": run_id,
+            "input_summary": describe_inputs(inputs),
+        }
     else:
         result_obj = {
             "ok": True,
@@ -36,11 +44,20 @@ def main() -> int:
             "run_id": run_id,
             "results": {"echo": text},
         }
+        log_obj = {
+            "ok": True,
+            "tool_id": tool_id,
+            "run_id": run_id,
+            "echo_summary": describe_value(text),
+        }
 
     body = json.dumps(result_obj, indent=2)
 
-    # Always print for logs/debug
-    print(body)
+    # PHI-safe: log a structural summary only — never the raw echoed value
+    # or raw inputs dict. The full `result_obj`/`body` (which may carry a
+    # caller-supplied value) still goes to RESULT_URI unredacted below,
+    # which is this tool's intended, access-controlled output channel.
+    print(json.dumps(log_obj, indent=2))
 
     # If RESULT_URI not set -> local mode: succeed
     if not result_uri:

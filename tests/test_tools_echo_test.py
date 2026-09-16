@@ -21,4 +21,7 @@ def test_echo_test_local_mode_no_result_uri():
     assert p.returncode == 0
     out = json.loads(p.stdout)
     assert out["ok"] is True
-    assert out["results"]["echo"] == "hello"
+    # PHI-safe: the raw echoed value must never appear in process stdout/logs.
+    assert "echo_summary" in out
+    assert "results" not in out
+    assert "hello" not in p.stdout
