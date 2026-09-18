@@ -4,6 +4,8 @@ External boundaries (subprocesses, object stores, and bundle downloads) are
 mocked.  These tests exercise the runner's command, environment, staging,
 result, and failure contracts without requiring workflow engines or cloud
 credentials.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import tools.workflow_runner.run as runner
 
 
 def test_json_env_returns_default_for_invalid_or_non_object(monkeypatch):
+    """Fall back to the given default when an env-var JSON payload is invalid or not a JSON object."""
     monkeypatch.setenv("INPUTS_JSON", "not-json")
     assert runner._load_json_env("INPUTS_JSON", {"fallback": True}) == {"fallback": True}
 
@@ -27,6 +30,7 @@ def test_json_env_returns_default_for_invalid_or_non_object(monkeypatch):
 
 
 def test_download_local_file_and_file_uri(tmp_path):
+    """Copy a local path or file:// URI to the destination path, creating parent directories as needed."""
     source = tmp_path / "source.txt"
     source.write_text("payload")
     destination = tmp_path / "nested" / "copy.txt"
@@ -40,6 +44,7 @@ def test_download_local_file_and_file_uri(tmp_path):
 
 
 def test_download_rejects_missing_and_unsupported_uris(tmp_path):
+    """Reject a missing local path, an unsupported URI scheme, and a malformed s3:// URI with distinct error messages."""
     with pytest.raises(RuntimeError, match="Local path not found"):
         runner._download_uri_to_path(str(tmp_path / "missing"), tmp_path / "out")
     with pytest.raises(RuntimeError, match="Unsupported download URI scheme"):
@@ -49,6 +54,7 @@ def test_download_rejects_missing_and_unsupported_uris(tmp_path):
 
 
 def test_download_s3_uses_bucket_key_and_destination(tmp_path, monkeypatch):
+    """Download an s3:// URI via boto3's download_file with the exact bucket, key, and destination path."""
     client = MagicMock()
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda name: client))
 
@@ -61,6 +67,7 @@ def test_download_s3_uses_bucket_key_and_destination(tmp_path, monkeypatch):
 
 
 def test_extract_tgz_and_run_command_boundaries(tmp_path, monkeypatch):
+    """Extract a bundle via `tar -xzf` and run a command as either a shell string or an argv list, propagating the subprocess return code."""
     check_call = MagicMock()
     run = MagicMock(return_value=SimpleNamespace(returncode=4))
     monkeypatch.setattr(runner.subprocess, "check_call", check_call)
@@ -78,6 +85,7 @@ def test_extract_tgz_and_run_command_boundaries(tmp_path, monkeypatch):
 
 
 def test_upload_rejects_bad_s3_and_unknown_schemes(monkeypatch):
+    """Reject a malformed s3:// upload target and an unsupported RESULT_URI scheme."""
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda name: MagicMock()))
     with pytest.raises(RuntimeError, match="Bad S3 URI"):
         runner._upload_uri("s3://bucket", b"data")
@@ -86,6 +94,7 @@ def test_upload_rejects_bad_s3_and_unknown_schemes(monkeypatch):
 
 
 def test_s3_put_file_uses_upload_file(tmp_path, monkeypatch):
+    """Upload a local file to S3 via boto3's upload_file with the exact bucket, key, and local path."""
     client = MagicMock()
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda name: client))
     local = tmp_path / "input.txt"
@@ -96,6 +105,7 @@ def test_s3_put_file_uses_upload_file(tmp_path, monkeypatch):
 
 
 def test_upload_local_and_s3_boundaries(tmp_path, monkeypatch):
+    """Write result bytes to a local path or upload them to S3 with the given content type, depending on the target URI scheme."""
     local = tmp_path / "results.json"
     runner._upload_uri(str(local), b"local")
     assert local.read_bytes() == b"local"
@@ -109,6 +119,7 @@ def test_upload_local_and_s3_boundaries(tmp_path, monkeypatch):
 
 
 def test_upload_azure_requires_valid_uri_and_connection(monkeypatch):
+    """Upload to azureblob:// via a connection-string-authenticated BlobServiceClient, rejecting a URI missing container/blob or a missing AZURE_STORAGE_CONNECTION_STRING."""
     blob_service = MagicMock()
     azure_blob = SimpleNamespace(BlobServiceClient=blob_service)
     monkeypatch.setitem(sys.modules, "azure.storage.blob", azure_blob)
@@ -125,6 +136,7 @@ def test_upload_azure_requires_valid_uri_and_connection(monkeypatch):
 
 
 def test_command_and_nextflow_helpers():
+    """RESULT_URI normalization, S3 bucket/prefix extraction, Nextflow-command detection, and -profile injection each behave correctly across their documented edge cases."""
     assert runner._normalize_result_uri("s3://bucket/run/results.json") == (
         "s3://bucket/run/results.json", "s3://bucket/run/outputs.json",
     )
@@ -152,6 +164,7 @@ def test_command_and_nextflow_helpers():
 
 
 def test_patch_nextflow_for_aws_uses_result_uri_fallback(monkeypatch):
+    """Derive the S3 work-dir for AWS Batch from RESULT_URI when S3_RESULTS_BUCKET/PREFIX are unset."""
     monkeypatch.delenv("S3_RESULTS_BUCKET", raising=False)
     monkeypatch.delenv("S3_RESULTS_PREFIX", raising=False)
     command, extra_env = runner._patch_nextflow_for_aws(
@@ -164,6 +177,7 @@ def test_patch_nextflow_for_aws_uses_result_uri_fallback(monkeypatch):
 
 
 def test_patch_nextflow_for_aws_honors_configured_bucket_and_existing_work_dir(monkeypatch):
+    """Prefer configured S3_RESULTS_BUCKET/PREFIX over RESULT_URI and leave an explicit -work-dir untouched."""
     monkeypatch.setenv("S3_RESULTS_BUCKET", "configured")
     monkeypatch.setenv("S3_RESULTS_PREFIX", "/prefix/")
     command, extra_env = runner._patch_nextflow_for_aws(
@@ -176,6 +190,7 @@ def test_patch_nextflow_for_aws_honors_configured_bucket_and_existing_work_dir(m
 
 
 def test_stage_inputs_rewrites_nested_duplicate_paths(tmp_path, monkeypatch):
+    """Upload each distinct local input path to S3 once and rewrite all occurrences (including nested duplicates) to the same S3 key, recording a stage manifest."""
     source = tmp_path / "input.fastq"
     source.write_text("reads")
     (tmp_path / "exec").mkdir()
@@ -198,6 +213,7 @@ def test_stage_inputs_rewrites_nested_duplicate_paths(tmp_path, monkeypatch):
 
 
 def test_stage_inputs_requires_bucket(tmp_path):
+    """Reject staging inputs to S3 when the target bucket is empty."""
     with pytest.raises(RuntimeError, match="S3 bucket is empty"):
         runner._stage_and_rewrite_inputs_to_s3(
             {}, bucket="", base_prefix="runs", run_id="r1", exec_root=tmp_path,
@@ -205,6 +221,7 @@ def test_stage_inputs_requires_bucket(tmp_path):
 
 
 def test_stage_inputs_preserves_non_string_values(tmp_path, monkeypatch):
+    """Leave non-string input values (numbers, booleans) untouched and unrecorded in the staging manifest."""
     monkeypatch.setattr(runner, "_s3_put_file", MagicMock())
     rewritten, manifest = runner._stage_and_rewrite_inputs_to_s3(
         {"count": 3, "enabled": True},
@@ -215,6 +232,7 @@ def test_stage_inputs_preserves_non_string_values(tmp_path, monkeypatch):
 
 
 def test_input_and_parameter_helpers_preserve_existing_values(tmp_path):
+    """Local-path detection, file-path resolution, content hashing, and Nextflow/CLI argument helpers each behave correctly for present and absent values."""
     local = tmp_path / "input.txt"
     local.write_text("x")
     assert runner._looks_like_local_path(str(local))
@@ -238,6 +256,7 @@ def test_input_and_parameter_helpers_preserve_existing_values(tmp_path):
 
 
 def test_apply_aws_env_does_not_overwrite_existing_values():
+    """Derive AWS Batch queue/region child-env vars from workflow inputs without overwriting an already-set AWS_REGION."""
     child_env = {"AWS_REGION": "existing"}
     runner._apply_aws_env_from_inputs(
         child_env, {"aws_queue": " queue ", "aws_region": " us-east-1 "}
@@ -249,6 +268,7 @@ def test_apply_aws_env_does_not_overwrite_existing_values():
 
 
 def test_main_local_success_writes_and_uploads_results(tmp_path, monkeypatch):
+    """A successful local Nextflow run uploads both the outputs file and a results.json reporting ok: true."""
     uploads = []
     executed = {}
 
@@ -275,6 +295,7 @@ def test_main_local_success_writes_and_uploads_results(tmp_path, monkeypatch):
 
 
 def test_main_failure_records_exit_code_and_upload_error(tmp_path, monkeypatch):
+    """A nonzero tool exit code is recorded in results.json, and a failed outputs upload is captured as outputs_upload_error rather than crashing the runner."""
     uploads = []
     monkeypatch.setenv("RUN_ID", "failed")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
@@ -301,6 +322,7 @@ def test_main_failure_records_exit_code_and_upload_error(tmp_path, monkeypatch):
     ],
 )
 def test_main_selects_legacy_engine_commands(tmp_path, monkeypatch, engine, workflow, expected):
+    """Select the correct default command (nextflow/snakemake/cwltool) for each legacy engine name given only a workflow file."""
     captured = {}
     monkeypatch.setenv("RUN_ID", f"{engine}-run")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / f"{engine}.json"))
@@ -314,6 +336,7 @@ def test_main_selects_legacy_engine_commands(tmp_path, monkeypatch, engine, work
 
 
 def test_main_bundle_mode_downloads_entrypoint_and_input_json(tmp_path, monkeypatch):
+    """Bundle mode downloads and extracts the workflow bundle, downloads input_json_uri, and builds a command referencing the resolved entrypoint and AWS params."""
     captured = {}
     monkeypatch.setenv("RUN_ID", "bundle-run")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "bundle-results.json"))
@@ -348,6 +371,7 @@ def test_main_bundle_mode_downloads_entrypoint_and_input_json(tmp_path, monkeypa
 
 
 def test_main_bundle_mode_rejects_missing_entrypoint(tmp_path, monkeypatch):
+    """Reject bundle mode when the declared workflow_entrypoint is not present after extraction."""
     monkeypatch.setenv("RUN_ID", "bad-bundle")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
     monkeypatch.setenv("WORK_ROOT", str(tmp_path / "work"))
@@ -363,6 +387,7 @@ def test_main_bundle_mode_rejects_missing_entrypoint(tmp_path, monkeypatch):
 
 
 def test_main_copies_local_bundle_and_uploads_normalized_outputs(tmp_path, monkeypatch):
+    """A local bundle path is copied into the exec root, and both raw and normalized outputs are uploaded and reflected in results.json."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "config.json").write_text("config")
@@ -391,6 +416,7 @@ def test_main_copies_local_bundle_and_uploads_normalized_outputs(tmp_path, monke
 
 
 def test_main_removes_existing_local_bundle_before_copy(tmp_path, monkeypatch):
+    """Remove a stale bundle directory from a prior run before copying in the current run's local bundle."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "new.txt").write_text("new")
@@ -417,6 +443,7 @@ def test_main_removes_existing_local_bundle_before_copy(tmp_path, monkeypatch):
 
 
 def test_main_uses_command_str_and_shlex_for_nextflow(tmp_path, monkeypatch):
+    """Parse a shell-quoted command_str via shlex into the exact argv passed to the runner."""
     captured = {}
     monkeypatch.setenv("RUN_ID", "string-command")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
@@ -430,6 +457,7 @@ def test_main_uses_command_str_and_shlex_for_nextflow(tmp_path, monkeypatch):
 
 
 def test_main_records_normalized_output_upload_failure(tmp_path, monkeypatch):
+    """A failed normalized-output upload is captured as outputs_normalized_upload_error without failing the overall run."""
     uploads = []
     monkeypatch.setenv("RUN_ID", "normalized-failure")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
@@ -453,6 +481,7 @@ def test_main_records_normalized_output_upload_failure(tmp_path, monkeypatch):
 
 
 def test_main_omits_oversized_outputs_from_result(tmp_path, monkeypatch):
+    """Replace an oversized outputs payload with a note pointing to outputs_uri instead of inlining it into results.json."""
     uploads = []
     monkeypatch.setenv("RUN_ID", "large-output")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
@@ -472,6 +501,7 @@ def test_main_omits_oversized_outputs_from_result(tmp_path, monkeypatch):
 
 
 def test_main_catches_process_exception_and_parses_malformed_outputs(tmp_path, monkeypatch):
+    """A subprocess-launch exception is recorded as results['error'], and malformed outputs.json content is reported as a parse error rather than propagating."""
     uploads = []
     monkeypatch.setenv("RUN_ID", "exception")
     monkeypatch.setenv("RESULT_URI", str(tmp_path / "results.json"))
@@ -492,6 +522,7 @@ def test_main_catches_process_exception_and_parses_malformed_outputs(tmp_path, m
 
 
 def test_main_aws_stages_inputs_and_patches_nextflow(tmp_path, monkeypatch):
+    """AWS mode stages local file inputs to S3, patches the Nextflow command for awsbatch with a run-scoped work-dir, and forwards queue/region into the child environment."""
     source = tmp_path / "reads.fastq"
     source.write_text("reads")
     uploads = []
@@ -524,6 +555,7 @@ def test_main_aws_stages_inputs_and_patches_nextflow(tmp_path, monkeypatch):
 
 
 def test_main_requires_run_id(monkeypatch):
+    """Reject running the workflow when RUN_ID is not set."""
     monkeypatch.delenv("RUN_ID", raising=False)
     with pytest.raises(RuntimeError, match="RUN_ID is required"):
         runner.main()

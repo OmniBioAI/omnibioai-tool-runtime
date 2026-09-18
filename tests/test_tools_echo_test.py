@@ -1,3 +1,6 @@
+"""End-to-end subprocess test of the echo_test tool's local-mode (no RESULT_URI) execution.
+
+Developer: Manish Kumar <manish@omnibioai.org>"""
 import json
 import os
 import subprocess
@@ -5,6 +8,7 @@ import sys
 
 
 def test_echo_test_local_mode_no_result_uri():
+    """Reject leaking the raw echoed input value into process stdout even in local mode with no RESULT_URI configured."""
     env = dict(os.environ)
     env["TOOL_ID"] = "echo_test"
     env["RUN_ID"] = "local123"

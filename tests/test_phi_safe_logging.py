@@ -11,6 +11,8 @@ They do NOT assert that the *uploaded* result (RESULT_URI content) is
 redacted — that channel is the tool's intended, access-controlled output
 and is expected to carry the real value. Only the log stream must be
 PHI-safe.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ SENTINEL_SECRET = "SECRET_TOKEN_TEST_ABC"
 
 
 def _sif_tool_def(tmp_path, command=None, outputs=None):
+    """Build a minimal tool-definition dict pointing at a fake SIF file for sif_main()."""
     sif = tmp_path / "tool.sif"
     sif.write_bytes(b"fake")
     return {
@@ -37,6 +40,7 @@ def _sif_tool_def(tmp_path, command=None, outputs=None):
 
 
 def _sif_env(tmp_path, td, inputs, resources_json="{}", result_uri=""):
+    """Build the environment mapping sif_main() reads its TOOL_ID/INPUTS_JSON/etc. from."""
     return {
         "TOOL_ID": "tool-1",
         "RUN_ID": "run-1",
@@ -53,6 +57,7 @@ class TestGenericSifRunnerSentinelLeakage:
     """Sentinel values must never reach stdout/stderr across execution paths."""
 
     def test_normal_execution_no_leak(self, tmp_path, capsys):
+        """A successful run must not print the sentinel sample id or secret token to stdout/stderr."""
         td = _sif_tool_def(tmp_path, command=["echo", "{sample_id}", "{token}"])
         inputs = {"sample_id": SENTINEL_PATIENT, "token": SENTINEL_SECRET}
         env = _sif_env(tmp_path, td, inputs)
@@ -158,8 +163,10 @@ class TestGenericSifRunnerSentinelLeakage:
 
 
 class TestEchoTestSentinelLeakage:
+    """Sentinel values must never reach stdout/stderr across echo_test execution paths."""
 
     def test_normal_execution_no_leak(self, capsys):
+        """A successful echo_test run must not print the sentinel input value to stdout."""
         env = {
             "TOOL_ID": "echo-tool",
             "RUN_ID": "run-1",
@@ -204,6 +211,7 @@ class TestEchoTestSentinelLeakage:
         assert SENTINEL_PATIENT not in captured.out
 
     def test_malformed_input_no_leak(self, capsys):
+        """Malformed INPUTS_JSON must not echo the offending raw text, which may embed the sentinel value."""
         env = {
             "TOOL_ID": "echo-tool",
             "RUN_ID": "run-1",

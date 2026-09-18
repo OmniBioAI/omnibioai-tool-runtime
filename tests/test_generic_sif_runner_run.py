@@ -12,6 +12,8 @@ Covers every function and every branch in main():
   - _collect_outputs  (1 match / many matches / no match)
   - main()  (every early-exit path + success + upload)
   - __main__ block
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -63,6 +65,7 @@ def _base_env(
     work_dir: str = "",
     sif_cache_dir: str = "/tmp/test_sif_cache",
 ) -> dict[str, str]:
+    """Build a minimal TOOL_ID/RUN_ID/RESULT_URI/INPUTS_JSON/RESOURCES_JSON/SIF_CACHE_DIR environment for main()."""
     env: dict[str, str] = {
         "TOOL_ID": tool_id,
         "RUN_ID": run_id,
@@ -79,6 +82,7 @@ def _base_env(
 
 
 def _env_with_tool_def(tool_def: dict = None, **kwargs) -> dict[str, str]:
+    """Build a main() environment carrying a given (or minimal) tool definition as TOOL_DEF_JSON."""
     td = tool_def or MINIMAL_TOOL_DEF
     return _base_env(tool_def_json=json.dumps(td), **kwargs)
 
@@ -87,12 +91,15 @@ def _env_with_tool_def(tool_def: dict = None, **kwargs) -> dict[str, str]:
 # 1. _env()
 # ===========================================================================
 class TestEnvHelper:
+    """_env() reads an environment variable, treating unset and empty-string values as falling back to the given default."""
 
     def test_returns_env_value(self):
+        """Return the value of a set environment variable."""
         with patch.dict("os.environ", {"MY_VAR": "hello"}, clear=False):
             assert _env("MY_VAR") == "hello"
 
     def test_returns_default_when_missing(self):
+        """Return the given default when the environment variable is unset."""
         with patch.dict("os.environ", {}, clear=False):
             os.environ.pop("MISSING_VAR", None)
             assert _env("MISSING_VAR", "fallback") == "fallback"
@@ -103,10 +110,12 @@ class TestEnvHelper:
             assert _env("MY_VAR", "default") == "default"
 
     def test_default_is_empty_string_when_not_given(self):
+        """Return an empty string when the variable is unset and no default is given."""
         os.environ.pop("TOTALLY_ABSENT", None)
         assert _env("TOTALLY_ABSENT") == ""
 
     def test_returns_string_type(self):
+        """Always return a str, even for a numeric-looking environment value."""
         with patch.dict("os.environ", {"NUM_VAR": "42"}, clear=False):
             result = _env("NUM_VAR")
         assert isinstance(result, str)
@@ -116,31 +125,39 @@ class TestEnvHelper:
 # 2. _resolve_env_refs()
 # ===========================================================================
 class TestResolveEnvRefs:
+    """_resolve_env_refs() expands ${VAR} and $VAR references from the process environment, leaving unresolvable references untouched."""
 
     def test_dollar_brace_syntax(self):
+        """Expand a ${VAR}-style reference to the environment value."""
         with patch.dict("os.environ", {"MY_VAR": "world"}, clear=False):
             assert _resolve_env_refs("hello ${MY_VAR}") == "hello world"
 
     def test_dollar_plain_syntax(self):
+        """Expand a bare $VAR-style reference to the environment value."""
         with patch.dict("os.environ", {"MY_VAR": "world"}, clear=False):
             assert _resolve_env_refs("hello $MY_VAR") == "hello world"
 
     def test_missing_var_kept_as_is(self):
+        """Leave a ${VAR} reference unexpanded (verbatim) when the variable is not set."""
         os.environ.pop("ABSENT_VAR", None)
         result = _resolve_env_refs("${ABSENT_VAR}")
         assert result == "${ABSENT_VAR}"
 
     def test_multiple_vars_expanded(self):
+        """Expand multiple distinct ${VAR} references within the same string."""
         with patch.dict("os.environ", {"A": "foo", "B": "bar"}, clear=False):
             assert _resolve_env_refs("${A}-${B}") == "foo-bar"
 
     def test_no_vars_unchanged(self):
+        """Leave a string with no $-references unchanged."""
         assert _resolve_env_refs("no vars here") == "no vars here"
 
     def test_empty_string(self):
+        """Return an empty string unchanged."""
         assert _resolve_env_refs("") == ""
 
     def test_mixed_syntax(self):
+        """Expand ${VAR} and $VAR references together in the same string."""
         with patch.dict("os.environ", {"X": "1", "Y": "2"}, clear=False):
             assert _resolve_env_refs("${X} $Y") == "1 2"
 
@@ -151,30 +168,36 @@ class TestResolveEnvRefs:
 class TestFetchSif:
 
     # --- local path ---
+    """_fetch_sif() resolves a SIF image reference — local path, s3://, azureblob://, gs://, or docker:// — to a usable local path or pass-through URI, using a local cache for cloud downloads."""
     def test_local_path_returns_path_object(self, tmp_path):
+        """Return the given local path unchanged (as a Path) when the SIF file exists on disk."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         result = _fetch_sif(str(sif), tmp_path)
         assert result == sif
 
     def test_local_path_not_found_raises(self, tmp_path):
+        """Raise FileNotFoundError when a local SIF path does not exist and no cloud fallback applies."""
         with pytest.raises(FileNotFoundError, match="SIF not found"):
             _fetch_sif("/nonexistent/path/tool.sif", tmp_path)
 
     # --- cache hit ---
     def test_s3_cache_hit_returns_cached(self, tmp_path):
+        """Return the cached local file, skipping any S3 download, when an s3:// SIF is already present in the cache directory."""
         cached = tmp_path / "tool.sif"
         cached.write_bytes(b"x" * 1024 * 1024 * 5)  # 5 MB
         result = _fetch_sif("s3://bucket/tool.sif", tmp_path)
         assert result == cached
 
     def test_azure_cache_hit_returns_cached(self, tmp_path):
+        """Return the cached local file, skipping any Azure download, when an azureblob:// SIF is already present in the cache directory."""
         cached = tmp_path / "tool.sif"
         cached.write_bytes(b"data")
         result = _fetch_sif("azureblob://account/container/tool.sif", tmp_path)
         assert result == cached
 
     def test_cache_hit_prints_message(self, tmp_path, capsys):
+        """Log a cache-hit message (not the raw SIF URI's sensitive detail) when serving a cached SIF file."""
         cached = tmp_path / "tool.sif"
         cached.write_bytes(b"x" * 1024 * 1024)
         _fetch_sif("s3://bucket/tool.sif", tmp_path)
@@ -182,6 +205,7 @@ class TestFetchSif:
 
     # --- s3 download ---
     def test_s3_miss_calls_fetch_from_s3(self, tmp_path):
+        """Delegate to _fetch_from_s3 exactly once when an s3:// SIF is not already cached."""
         cache_dir = tmp_path / "cache"
         with patch("tools.generic_sif_runner.run._fetch_from_s3") as mock_s3:
             mock_s3.side_effect = lambda uri, dest: dest.write_bytes(b"sif")
@@ -189,6 +213,7 @@ class TestFetchSif:
         mock_s3.assert_called_once()
 
     def test_s3_miss_creates_cache_dir(self, tmp_path):
+        """Create the SIF cache directory before attempting an S3 download."""
         cache_dir = tmp_path / "new_cache"
         with patch("tools.generic_sif_runner.run._fetch_from_s3") as mock_s3:
             mock_s3.side_effect = lambda uri, dest: dest.write_bytes(b"sif")
@@ -197,6 +222,7 @@ class TestFetchSif:
 
     # --- azure download ---
     def test_azure_miss_calls_fetch_from_azure(self, tmp_path):
+        """Delegate to _fetch_from_azure exactly once when an azureblob:// SIF is not already cached."""
         cache_dir = tmp_path / "cache"
         with patch("tools.generic_sif_runner.run._fetch_from_azure") as mock_az:
             mock_az.side_effect = lambda uri, dest: dest.write_bytes(b"sif")
@@ -205,6 +231,7 @@ class TestFetchSif:
 
     # --- env var expansion ---
     def test_env_var_in_uri_expanded(self, tmp_path):
+        """Expand an environment variable reference embedded in the SIF URI before resolving it."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         with patch.dict("os.environ", {"SIF_PATH": str(sif)}, clear=False):
@@ -213,20 +240,24 @@ class TestFetchSif:
 
     # --- docker:// passthrough ---
     def test_docker_uri_returned_as_is(self, tmp_path):
+        """Return a docker:// URI unchanged as a pass-through string for native singularity/Docker handling."""
         uri = "docker://quay.io/biocontainers/bwa:0.7.17--h7132678_9"
         result = _fetch_sif(uri, tmp_path)
         assert result == uri
 
     def test_docker_uri_returns_str_not_path(self, tmp_path):
+        """Return a docker:// URI as a plain str, never wrapped in a Path."""
         result = _fetch_sif("docker://quay.io/biocontainers/bwa:latest", tmp_path)
         assert isinstance(result, str)
 
     def test_docker_uri_not_collapsed(self, tmp_path):
         # Path() collapses "//" — guard against regressing to that
+        """Never collapse the "//" in a docker:// URI (Path() would corrupt the scheme) — regression guard."""
         result = _fetch_sif("docker://quay.io/biocontainers/bwa:latest", tmp_path)
         assert result.startswith("docker://")
 
     def test_docker_uri_skips_cache_dir_creation(self, tmp_path):
+        """Never create the SIF cache directory for a docker:// URI, since no local caching applies."""
         cache_dir = tmp_path / "unused_cache"
         _fetch_sif("docker://quay.io/biocontainers/bwa:latest", cache_dir)
         assert not cache_dir.exists()
@@ -236,6 +267,7 @@ class TestFetchSif:
 # 4. _fetch_from_s3()
 # ===========================================================================
 class TestFetchFromS3:
+    """_fetch_from_s3() downloads a SIF image from S3 via boto3, raising RuntimeError naming the URI on failure."""
 
     def _make_boto3_mock(self):
         """Return a boto3 mock whose download_file writes the dest file."""
@@ -246,12 +278,14 @@ class TestFetchFromS3:
         return mock_boto3
 
     def test_boto3_download_success(self, tmp_path):
+        """Download an S3 SIF object to the destination path via boto3."""
         dest = tmp_path / "tool.sif"
         with patch.dict("sys.modules", {"boto3": self._make_boto3_mock()}):
             _fetch_from_s3("s3://bucket/tool.sif", dest)
         assert dest.exists()
 
     def test_boto3_called_with_correct_bucket_and_key(self, tmp_path):
+        """Call boto3's download_file with the exact bucket and key parsed from the s3:// URI."""
         dest = tmp_path / "tool.sif"
         mock_boto3 = self._make_boto3_mock()
         with patch.dict("sys.modules", {"boto3": mock_boto3}):
@@ -261,6 +295,7 @@ class TestFetchFromS3:
         assert call_args[1] == "my/key.sif"
 
     def test_boto3_called_once_per_download(self, tmp_path):
+        """Call boto3's download_file exactly once per SIF download."""
         dest = tmp_path / "tool.sif"
         mock_boto3 = self._make_boto3_mock()
         with patch.dict("sys.modules", {"boto3": mock_boto3}):
@@ -268,12 +303,14 @@ class TestFetchFromS3:
         mock_boto3.client.return_value.download_file.assert_called_once()
 
     def test_boto3_creates_parent_directory(self, tmp_path):
+        """Create the destination's parent directory before downloading."""
         dest = tmp_path / "subdir" / "tool.sif"
         with patch.dict("sys.modules", {"boto3": self._make_boto3_mock()}):
             _fetch_from_s3("s3://bucket/tool.sif", dest)
         assert dest.parent.exists()
 
     def test_both_fail_raises_runtime_error(self, tmp_path):
+        """Raise RuntimeError naming the S3 download failure when boto3 raises."""
         dest = tmp_path / "tool.sif"
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value.download_file.side_effect = Exception("boom")
@@ -284,6 +321,7 @@ class TestFetchFromS3:
                     _fetch_from_s3("s3://bucket/tool.sif", dest)
 
     def test_runtime_error_message_contains_uri(self, tmp_path):
+        """Include the failing s3:// URI in the download-failure error message."""
         dest = tmp_path / "tool.sif"
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value.download_file.side_effect = Exception("x")
@@ -299,8 +337,10 @@ class TestFetchFromS3:
 # 5. _fetch_from_azure()
 # ===========================================================================
 class TestFetchFromAzure:
+    """_fetch_from_azure() downloads a SIF image from Azure Blob Storage using either managed identity or a connection string, raising RuntimeError on failure."""
 
     def _make_azure_mocks(self):
+        """Build a mocked BlobServiceClient constructor/instance chain returning fixed SIF bytes."""
         mock_blob_data = MagicMock()
         mock_blob_data.readall.return_value = b"sif-bytes"
         mock_bc = MagicMock()
@@ -312,6 +352,7 @@ class TestFetchFromAzure:
         return mock_bsc_cls, mock_svc, mock_bc
 
     def test_managed_identity_path(self, tmp_path):
+        """Download an azureblob:// SIF using DefaultAzureCredential when AZURE_AUTH is managed_identity."""
         dest = tmp_path / "tool.sif"
         mock_bsc_cls, mock_svc, _ = self._make_azure_mocks()
         mock_cred = MagicMock()
@@ -325,6 +366,7 @@ class TestFetchFromAzure:
         assert dest.read_bytes() == b"sif-bytes"
 
     def test_connection_string_path(self, tmp_path):
+        """Download an azureblob:// SIF via from_connection_string when AZURE_AUTH is connection_string."""
         dest = tmp_path / "tool.sif"
         mock_bsc_cls, mock_svc, _ = self._make_azure_mocks()
         env = {"AZURE_AUTH": "connection_string", "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https"}
@@ -337,6 +379,7 @@ class TestFetchFromAzure:
         mock_bsc_cls.from_connection_string.assert_called_once()
 
     def test_failure_raises_runtime_error(self, tmp_path):
+        """Raise RuntimeError naming the Azure Blob download failure when the SDK call raises."""
         dest = tmp_path / "tool.sif"
         mock_bsc_cls = MagicMock(side_effect=Exception("azure boom"))
         with patch.dict("os.environ", {"AZURE_AUTH": "managed_identity"}, clear=False):
@@ -348,6 +391,7 @@ class TestFetchFromAzure:
                     _fetch_from_azure("azureblob://account/container/tool.sif", dest)
 
     def test_container_and_blob_parsed_correctly(self, tmp_path):
+        """Parse the container and blob path correctly out of a deep azureblob:// URI."""
         dest = tmp_path / "tool.sif"
         mock_bsc_cls, mock_svc, mock_bc = self._make_azure_mocks()
         env = {"AZURE_AUTH": "managed_identity", "AZURE_STORAGE_CONNECTION_STRING": ""}
@@ -366,14 +410,17 @@ class TestFetchFromAzure:
 # 6. _load_tool_def()
 # ===========================================================================
 class TestLoadToolDef:
+    """_load_tool_def() resolves a tool definition from TOOL_DEF_JSON, TOOL_DEF_PATH, or a live TES API call, in that priority order."""
 
     def test_loads_from_tool_def_json_env(self):
+        """Load the tool definition by parsing TOOL_DEF_JSON directly."""
         td = {"slurm": {"image": "/sif/tool.sif"}}
         with patch.dict("os.environ", {"TOOL_DEF_JSON": json.dumps(td)}, clear=False):
             result = _load_tool_def()
         assert result == td
 
     def test_tool_def_json_takes_priority_over_path(self, tmp_path):
+        """Prefer TOOL_DEF_JSON over TOOL_DEF_PATH when both are set."""
         td_json = {"source": "env"}
         td_file = {"source": "file"}
         p = tmp_path / "tool.json"
@@ -384,6 +431,7 @@ class TestLoadToolDef:
         assert result["source"] == "env"
 
     def test_loads_from_tool_def_path_env(self, tmp_path):
+        """Load the tool definition from the file named by TOOL_DEF_PATH when TOOL_DEF_JSON is unset."""
         td = {"slurm": {"image": "/sif/tool.sif"}}
         p = tmp_path / "tool.json"
         p.write_text(json.dumps(td))
@@ -405,6 +453,7 @@ class TestLoadToolDef:
                 _load_tool_def()
 
     def test_loads_from_tes_url(self):
+        """Load the tool definition by fetching it from the live TES API at TES_URL when no local source is set."""
         tool_id = "my-tool"
         td = {"tool_id": tool_id, "slurm": {}}
         mock_response = MagicMock()
@@ -418,12 +467,14 @@ class TestLoadToolDef:
         assert result["tool_id"] == tool_id
 
     def test_all_missing_raises_runtime_error(self):
+        """Raise RuntimeError when none of TOOL_DEF_JSON/TOOL_DEF_PATH/TES_URL yield a tool definition."""
         env = {"TOOL_DEF_JSON": "", "TOOL_DEF_PATH": "", "TES_URL": "", "TOOL_ID": ""}
         with patch.dict("os.environ", env, clear=False):
             with pytest.raises(RuntimeError, match="Cannot load tool definition"):
                 _load_tool_def()
 
     def test_error_message_mentions_env_vars(self):
+        """Name the relevant environment variables in the cannot-load-tool-definition error message."""
         env = {"TOOL_DEF_JSON": "", "TOOL_DEF_PATH": "", "TES_URL": "", "TOOL_ID": ""}
         with patch.dict("os.environ", env, clear=False):
             with pytest.raises(RuntimeError) as exc_info:
@@ -436,16 +487,20 @@ class TestLoadToolDef:
 # 7. _resolve_command()
 # ===========================================================================
 class TestResolveCommand:
+    """_resolve_command() fills {placeholder} slots in the command template from inputs/resources/work_dir, and raises RuntimeError naming any placeholder it cannot fill."""
 
     def test_simple_substitution(self):
+        """Substitute a single {placeholder} in a command template from the given inputs."""
         result = _resolve_command(["echo", "{msg}"], {"msg": "hello"}, "/work")
         assert result == ["echo", "hello"]
 
     def test_work_dir_substituted(self):
+        """Substitute {work_dir} in a command template with the given working directory."""
         result = _resolve_command(["{work_dir}/out.bam"], {}, "/work/dir")
         assert result == ["/work/dir/out.bam"]
 
     def test_multiple_inputs_substituted(self):
+        """Substitute multiple distinct {placeholder}s in a command template from the given inputs."""
         result = _resolve_command(
             ["tool", "--in", "{infile}", "--out", "{outfile}"],
             {"infile": "/a.bam", "outfile": "/b.bam"},
@@ -454,19 +509,23 @@ class TestResolveCommand:
         assert result == ["tool", "--in", "/a.bam", "--out", "/b.bam"]
 
     def test_missing_key_raises_runtime_error(self):
+        """Raise RuntimeError when a command template references a placeholder absent from inputs/resources/work_dir."""
         with pytest.raises(RuntimeError, match="Missing input for command placeholder"):
             _resolve_command(["{missing_key}"], {}, "/work")
 
     def test_missing_key_error_mentions_key_name(self):
+        """Name the missing placeholder key in the resolve-command error message."""
         with pytest.raises(RuntimeError) as exc_info:
             _resolve_command(["{my_missing_key}"], {}, "/work")
         assert "my_missing_key" in str(exc_info.value)
 
     def test_no_placeholders_returned_as_is(self):
+        """Return a command template with no {placeholders} unchanged."""
         cmd = ["singularity", "exec", "tool.sif", "echo"]
         assert _resolve_command(cmd, {}, "/work") == cmd
 
     def test_returns_list_of_strings(self):
+        """Always return every resolved command argument as a str."""
         result = _resolve_command(["echo", "{val}"], {"val": "x"}, "/w")
         assert all(isinstance(r, str) for r in result)
 
@@ -475,13 +534,16 @@ class TestResolveCommand:
 # 8. _collect_outputs()
 # ===========================================================================
 class TestCollectOutputs:
+    """_collect_outputs() globs each output spec's pattern in the work directory, storing a string for one match, a list for many, and None for zero."""
 
     def test_single_match_stored_as_string(self, tmp_path):
+        """Store a single glob match as a plain string path, not a list."""
         (tmp_path / "output.bam").write_bytes(b"")
         result = _collect_outputs(tmp_path, [{"name": "bam", "pattern": "*.bam"}])
         assert result["bam"] == str(tmp_path / "output.bam")
 
     def test_multiple_matches_stored_as_list(self, tmp_path):
+        """Store multiple glob matches for one output name as a list of paths."""
         (tmp_path / "a.bam").write_bytes(b"")
         (tmp_path / "b.bam").write_bytes(b"")
         result = _collect_outputs(tmp_path, [{"name": "bam", "pattern": "*.bam"}])
@@ -489,24 +551,29 @@ class TestCollectOutputs:
         assert len(result["bam"]) == 2
 
     def test_no_match_stored_as_none(self, tmp_path):
+        """Store None for an output whose glob pattern matches nothing."""
         result = _collect_outputs(tmp_path, [{"name": "vcf", "pattern": "*.vcf"}])
         assert result["vcf"] is None
 
     def test_no_match_prints_warning(self, tmp_path, capsys):
+        """Log a WARNING when an output pattern matches no files."""
         _collect_outputs(tmp_path, [{"name": "vcf", "pattern": "*.vcf"}])
         assert "WARNING" in capsys.readouterr().out
 
     def test_default_name_is_output(self, tmp_path):
+        """Default an output spec's name to "output" when not given."""
         (tmp_path / "file.txt").write_bytes(b"")
         result = _collect_outputs(tmp_path, [{"pattern": "*.txt"}])
         assert "output" in result
 
     def test_default_pattern_matches_all(self, tmp_path):
+        """Default an output spec's glob pattern to "*" (match everything) when not given."""
         (tmp_path / "anything.xyz").write_bytes(b"")
         result = _collect_outputs(tmp_path, [{"name": "out"}])
         assert result["out"] is not None
 
     def test_multiple_specs_returned(self, tmp_path):
+        """Collect results for multiple independent output specs in one call."""
         (tmp_path / "a.bam").write_bytes(b"")
         (tmp_path / "b.vcf").write_bytes(b"")
         result = _collect_outputs(tmp_path, [
@@ -516,9 +583,11 @@ class TestCollectOutputs:
         assert "bam" in result and "vcf" in result
 
     def test_empty_spec_list_returns_empty_dict(self, tmp_path):
+        """Return an empty dict when no output specs are given."""
         assert _collect_outputs(tmp_path, []) == {}
 
     def test_matches_are_sorted(self, tmp_path):
+        """Return multiple glob matches for one output name in sorted order."""
         (tmp_path / "z.bam").write_bytes(b"")
         (tmp_path / "a.bam").write_bytes(b"")
         result = _collect_outputs(tmp_path, [{"name": "bam", "pattern": "*.bam"}])
@@ -529,30 +598,36 @@ class TestCollectOutputs:
 # 9. main() — early-exit paths
 # ===========================================================================
 class TestMainEarlyExits:
+    """main() exits with code 2, logging to stderr, at each validation/setup failure point before the tool is actually executed."""
 
     def test_bad_inputs_json_returns_2(self):
+        """Return exit code 2 when INPUTS_JSON is not valid JSON."""
         env = _base_env(inputs_json="not-json")
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_bad_resources_json_returns_2(self):
+        """Return exit code 2 when RESOURCES_JSON is not valid JSON."""
         env = _base_env(resources_json="{bad}")
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_bad_json_prints_to_stderr(self, capsys):
+        """Print an ERROR diagnostic to stderr when INPUTS_JSON/RESOURCES_JSON fails to parse."""
         env = _base_env(inputs_json="bad")
         with patch.dict("os.environ", env, clear=True):
             main()
         assert "ERROR" in capsys.readouterr().err
 
     def test_load_tool_def_failure_returns_2(self):
+        """Return exit code 2 when no tool definition source (JSON/path/TES) is available."""
         env = _base_env()   # no TOOL_DEF_JSON → will fail
         env.update({"TOOL_DEF_JSON": "", "TOOL_DEF_PATH": "", "TES_URL": "", "TOOL_ID": ""})
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_load_tool_def_failure_prints_error(self, capsys):
+        """Print an ERROR diagnostic to stderr when the tool definition cannot be loaded."""
         env = _base_env()
         env.update({"TOOL_DEF_JSON": "", "TOOL_DEF_PATH": "", "TES_URL": "", "TOOL_ID": ""})
         with patch.dict("os.environ", env, clear=True):
@@ -560,12 +635,14 @@ class TestMainEarlyExits:
         assert "ERROR" in capsys.readouterr().err
 
     def test_missing_slurm_image_returns_2(self):
+        """Return exit code 2 when the tool definition's slurm.image is empty."""
         td = {"slurm": {"image": "", "command": [], "outputs": []}}
         env = _env_with_tool_def(td)
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_missing_slurm_image_prints_error(self, capsys):
+        """Name the missing slurm.image in the stderr diagnostic."""
         td = {"slurm": {"image": "", "command": [], "outputs": []}}
         env = _env_with_tool_def(td)
         with patch.dict("os.environ", env, clear=True):
@@ -573,18 +650,21 @@ class TestMainEarlyExits:
         assert "no slurm.image" in capsys.readouterr().err
 
     def test_no_slurm_key_returns_2(self):
+        """Return exit code 2 when the tool definition has no slurm key at all."""
         td = {}
         env = _env_with_tool_def(td)
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_sif_fetch_failure_returns_2(self, tmp_path):
+        """Return exit code 2 when the SIF image cannot be fetched and no Docker fallback is configured."""
         td = {"slurm": {"image": "/nonexistent/tool.sif", "command": ["echo"], "outputs": []}}
         env = _env_with_tool_def(td, work_dir=str(tmp_path))
         with patch.dict("os.environ", env, clear=True):
             assert main() == 2
 
     def test_sif_fetch_failure_prints_error(self, tmp_path, capsys):
+        """Report the SIF fetch failure on stderr."""
         td = {"slurm": {"image": "/nonexistent/tool.sif", "command": ["echo"], "outputs": []}}
         env = _env_with_tool_def(td, work_dir=str(tmp_path))
         with patch.dict("os.environ", env, clear=True):
@@ -592,6 +672,7 @@ class TestMainEarlyExits:
         assert "SIF fetch failed" in capsys.readouterr().err
 
     def test_resolve_command_failure_returns_2(self, tmp_path):
+        """Return exit code 2 when the command template references a missing input placeholder."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["{missing}"], "outputs": []}}
@@ -600,6 +681,7 @@ class TestMainEarlyExits:
             assert main() == 2
 
     def test_resolve_command_failure_prints_error(self, tmp_path, capsys):
+        """Report the command-resolution failure on stderr."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["{missing}"], "outputs": []}}
@@ -613,6 +695,7 @@ class TestMainEarlyExits:
 # 10. main() — successful execution
 # ===========================================================================
 class TestMainSuccess:
+    """A full main() run through the singularity path — command construction, environment, output binding, and result reporting — for a mocked tool subprocess."""
 
     def _run_with_mock_proc(
         self,
@@ -624,6 +707,7 @@ class TestMainSuccess:
         inputs_json: str = "{}",
         resources_json: str = "{}",
     ):
+        """Build a full main() environment plus a mocked subprocess.run() result for a successful or failed tool execution."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -641,6 +725,7 @@ class TestMainSuccess:
         return env, mock_proc
 
     def test_returns_0_on_success(self, tmp_path):
+        """Return exit code 0 when the singularity/tool subprocess exits 0."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc):
@@ -648,6 +733,7 @@ class TestMainSuccess:
         assert rc == 0
 
     def test_returns_1_when_singularity_fails(self, tmp_path):
+        """Return exit code 1 when the singularity/tool subprocess exits nonzero."""
         env, mock_proc = self._run_with_mock_proc(tmp_path, returncode=1)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc):
@@ -655,6 +741,7 @@ class TestMainSuccess:
         assert rc == 1
 
     def test_exit_code_in_result(self, tmp_path, capsys):
+        """Report the tool's exact exit_code in the printed result JSON."""
         env, mock_proc = self._run_with_mock_proc(tmp_path, returncode=0)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc):
@@ -671,6 +758,7 @@ class TestMainSuccess:
                 pass
 
     def test_tool_id_in_result(self, tmp_path, capsys):
+        """Include the configured tool_id in the printed result."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         env["TOOL_ID"] = "my-tool"
         with patch.dict("os.environ", env, clear=True):
@@ -680,6 +768,7 @@ class TestMainSuccess:
         assert "my-tool" in out
 
     def test_singularity_called_with_exec(self, tmp_path):
+        """Invoke `singularity exec` as the first two argv elements for a normal (non-Docker, non-mismatched-arch) run."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc) as mock_run:
@@ -689,6 +778,7 @@ class TestMainSuccess:
         assert args[1] == "exec"
 
     def test_singularity_cmd_includes_sif_path(self, tmp_path):
+        """Include the resolved local SIF file path in the singularity command line."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         sif_path = str(tmp_path / "tool.sif")
         with patch.dict("os.environ", env, clear=True):
@@ -698,6 +788,7 @@ class TestMainSuccess:
         assert sif_path in args
 
     def test_omp_num_threads_set_from_resources(self, tmp_path):
+        """Set OMP_NUM_THREADS in the subprocess environment from resources.cpu."""
         env, mock_proc = self._run_with_mock_proc(tmp_path, resources_json='{"cpu": 4}')
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc) as mock_run:
@@ -706,6 +797,7 @@ class TestMainSuccess:
         assert passed_env["OMP_NUM_THREADS"] == "4"
 
     def test_omp_num_threads_defaults_to_1(self, tmp_path):
+        """Default OMP_NUM_THREADS to "1" when resources.cpu is not given."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc) as mock_run:
@@ -714,6 +806,7 @@ class TestMainSuccess:
         assert passed_env["OMP_NUM_THREADS"] == "1"
 
     def test_stderr_printed_to_stderr_stream(self, tmp_path, capsys):
+        """Pass the tool's stderr output through to the runtime's own stderr stream."""
         env, mock_proc = self._run_with_mock_proc(tmp_path, stderr="some error")
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc):
@@ -721,6 +814,7 @@ class TestMainSuccess:
         assert "some error" in capsys.readouterr().err
 
     def test_work_dir_bound_in_singularity_cmd(self, tmp_path):
+        """Bind the work directory into the container via --bind in the singularity command."""
         env, mock_proc = self._run_with_mock_proc(tmp_path)
         with patch.dict("os.environ", env, clear=True):
             with patch("subprocess.run", return_value=mock_proc) as mock_run:
@@ -729,6 +823,7 @@ class TestMainSuccess:
         assert "--bind" in args
 
     def test_input_file_path_bound_if_exists(self, tmp_path):
+        """Bind the parent directory of an existing local input file path into the container."""
         input_file = tmp_path / "input.bam"
         input_file.write_bytes(b"data")
         env, mock_proc = self._run_with_mock_proc(
@@ -743,6 +838,7 @@ class TestMainSuccess:
         assert str(tmp_path) in " ".join(args)
 
     def test_non_path_input_not_bound(self, tmp_path):
+        """Never add a --bind entry for a non-path (e.g. numeric-string) input value."""
         env, mock_proc = self._run_with_mock_proc(
             tmp_path,
             inputs_json=json.dumps({"count": "42"}),
@@ -760,8 +856,10 @@ class TestMainSuccess:
 # 11. main() — upload path
 # ===========================================================================
 class TestMainUpload:
+    """main() uploads the run result to RESULT_URI via upload_to_result_uri, with the exact kwargs (uri/content/content_type/aws_profile) the uploader contract requires."""
 
     def _run_with_upload(self, tmp_path, result_uri: str, upload_mock):
+        """Run main() with a mocked successful subprocess and a mocked upload_to_result_uri, for a given RESULT_URI."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -773,28 +871,33 @@ class TestMainUpload:
                     return main()
 
     def test_upload_called_when_result_uri_set(self, tmp_path):
+        """Call upload_to_result_uri exactly once when RESULT_URI is set."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key", mock_upload)
         mock_upload.assert_called_once()
 
     def test_upload_not_called_without_result_uri(self, tmp_path):
+        """Skip the upload entirely when RESULT_URI is empty."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "", mock_upload)
         mock_upload.assert_not_called()
 
     def test_upload_receives_result_uri(self, tmp_path):
+        """Pass the exact configured RESULT_URI through to the uploader."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key.json", mock_upload)
         _, kwargs = mock_upload.call_args
         assert kwargs["result_uri"] == "s3://bucket/key.json"
 
     def test_upload_content_is_bytes(self, tmp_path):
+        """Pass the upload content as bytes, not a str."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key", mock_upload)
         _, kwargs = mock_upload.call_args
         assert isinstance(kwargs["content"], bytes)
 
     def test_upload_content_is_valid_json(self, tmp_path):
+        """Upload content that parses as valid JSON containing an 'ok' field."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key", mock_upload)
         _, kwargs = mock_upload.call_args
@@ -802,12 +905,14 @@ class TestMainUpload:
         assert "ok" in obj
 
     def test_upload_content_type_is_json(self, tmp_path):
+        """Pass application/json as the upload's content_type."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key", mock_upload)
         _, kwargs = mock_upload.call_args
         assert kwargs["content_type"] == "application/json"
 
     def test_upload_uses_aws_profile_from_env(self, tmp_path):
+        """Forward the AWS_PROFILE environment variable to the uploader as aws_profile."""
         mock_upload = MagicMock()
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
@@ -823,6 +928,7 @@ class TestMainUpload:
         assert kwargs["aws_profile"] == "my-profile"
 
     def test_upload_prints_confirmation(self, tmp_path, capsys):
+        """Print an "uploaded" confirmation message after a successful upload."""
         mock_upload = MagicMock()
         self._run_with_upload(tmp_path, "s3://bucket/key", mock_upload)
         assert "uploaded" in capsys.readouterr().out
@@ -832,8 +938,10 @@ class TestMainUpload:
 # 12. __main__ block
 # ===========================================================================
 class TestMainBlock:
+    """The `if __name__ == "__main__"` execution path raises SystemExit carrying main()'s return code, across success and failure."""
 
     def test_raises_system_exit_on_success(self, tmp_path):
+        """SystemExit carries code 0 for a successful run executed via __main__."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo"], "outputs": []}}
@@ -846,6 +954,7 @@ class TestMainBlock:
         assert exc_info.value.code == 0
 
     def test_raises_system_exit_with_code_2_on_bad_json(self):
+        """SystemExit carries code 2 when INPUTS_JSON is invalid."""
         env = _base_env(inputs_json="bad")
         with patch.dict("os.environ", env, clear=True):
             with pytest.raises(SystemExit) as exc_info:
@@ -853,6 +962,7 @@ class TestMainBlock:
         assert exc_info.value.code == 2
 
     def test_raises_system_exit_with_code_1_on_tool_failure(self, tmp_path):
+        """SystemExit carries code 1 when the underlying tool exits nonzero."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["false"], "outputs": []}}
@@ -869,8 +979,10 @@ class TestMainBlock:
 # 13. _fetch_sif() — SIF_BASE rewrite (lines 43-47)
 # ===========================================================================
 class TestFetchSifBase:
+    """_fetch_sif() rewrites a missing local SIF path to a SIF_BASE-prefixed URI, but only for genuinely local (non-cloud-scheme) paths."""
 
     def test_sif_base_rewrites_missing_local_to_cloud(self, tmp_path):
+        """Rewrite a missing local SIF path to SIF_BASE + filename when SIF_BASE is configured."""
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         cached = cache_dir / "tool.sif"
@@ -880,6 +992,7 @@ class TestFetchSifBase:
         assert result == cached
 
     def test_sif_base_not_applied_to_cloud_uris(self, tmp_path):
+        """Never apply the SIF_BASE rewrite to a URI that is already a cloud scheme (s3/azureblob/gs)."""
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         cached = cache_dir / "tool.sif"
@@ -889,6 +1002,7 @@ class TestFetchSifBase:
         assert result == cached
 
     def test_sif_base_prints_rewrite_message(self, tmp_path, capsys):
+        """Log the SIF_BASE rewrite decision (local SIF not found) to stdout."""
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         (cache_dir / "tool.sif").write_bytes(b"sif")
@@ -901,8 +1015,10 @@ class TestFetchSifBase:
 # 14. _fetch_sif() — GCS download (lines 73-74)
 # ===========================================================================
 class TestFetchSifGcs:
+    """_fetch_sif() dispatches gs:// SIF URIs to _fetch_from_gcs, honoring the local cache the same way as the s3/azureblob paths."""
 
     def test_gcs_miss_calls_fetch_from_gcs(self, tmp_path):
+        """Delegate to _fetch_from_gcs exactly once when a gs:// SIF is not already cached."""
         cache_dir = tmp_path / "cache"
         with patch("tools.generic_sif_runner.run._fetch_from_gcs") as mock_gcs:
             mock_gcs.side_effect = lambda uri, dest: dest.write_bytes(b"sif")
@@ -910,6 +1026,7 @@ class TestFetchSifGcs:
         mock_gcs.assert_called_once()
 
     def test_gcs_cache_hit_skips_download(self, tmp_path):
+        """Serve a gs:// SIF from the local cache without calling _fetch_from_gcs when already cached."""
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         cached = cache_dir / "tool.sif"
@@ -924,6 +1041,7 @@ class TestFetchSifGcs:
 # 15. _fetch_from_gcs() (lines 125-139)
 # ===========================================================================
 def _make_gcs_storage_mock(dest_path: Path):
+    """Build a mocked google.cloud.storage module whose Client().bucket().blob().download_to_filename writes the destination file."""
     mock_blob = MagicMock()
     mock_blob.download_to_filename.side_effect = lambda p: Path(p).write_bytes(b"sif-data")
     mock_bucket = MagicMock()
@@ -936,8 +1054,10 @@ def _make_gcs_storage_mock(dest_path: Path):
 
 
 class TestFetchFromGcs:
+    """_fetch_from_gcs() downloads a SIF image from Google Cloud Storage, raising RuntimeError naming the URI on failure."""
 
     def test_gcs_download_success(self, tmp_path):
+        """Download a GCS SIF object to the destination path."""
         dest = tmp_path / "tool.sif"
         mock_storage, _ = _make_gcs_storage_mock(dest)
         mock_gcloud = MagicMock(storage=mock_storage)
@@ -949,6 +1069,7 @@ class TestFetchFromGcs:
         assert dest.exists()
 
     def test_gcs_download_uses_correct_bucket(self, tmp_path):
+        """Look up the exact bucket name parsed from the gs:// SIF URI."""
         dest = tmp_path / "tool.sif"
         mock_storage, _ = _make_gcs_storage_mock(dest)
         mock_gcloud = MagicMock(storage=mock_storage)
@@ -960,6 +1081,7 @@ class TestFetchFromGcs:
         mock_storage.Client.return_value.bucket.assert_called_with("my-bucket")
 
     def test_gcs_download_uses_correct_blob_path(self, tmp_path):
+        """Look up the exact blob path parsed from the gs:// SIF URI."""
         dest = tmp_path / "tool.sif"
         mock_storage, _ = _make_gcs_storage_mock(dest)
         mock_gcloud = MagicMock(storage=mock_storage)
@@ -971,6 +1093,7 @@ class TestFetchFromGcs:
         mock_storage.Client.return_value.bucket.return_value.blob.assert_called_with("path/to/tool.sif")
 
     def test_gcs_download_failure_raises_runtime_error(self, tmp_path):
+        """Raise RuntimeError naming the GCS download failure when the client raises."""
         dest = tmp_path / "tool.sif"
         mock_storage = MagicMock()
         mock_storage.Client.side_effect = Exception("gcs boom")
@@ -983,6 +1106,7 @@ class TestFetchFromGcs:
                 _fetch_from_gcs("gs://my-bucket/tool.sif", dest)
 
     def test_gcs_error_message_contains_uri(self, tmp_path):
+        """Include the failing gs:// URI in the download-failure error message."""
         dest = tmp_path / "tool.sif"
         mock_storage = MagicMock()
         mock_storage.Client.side_effect = Exception("boom")
@@ -1000,8 +1124,10 @@ class TestFetchFromGcs:
 # 16. _load_tool_def() — TES URL properly mocked (lines 159-163)
 # ===========================================================================
 class TestLoadToolDefTesUrlFixed:
+    """_load_tool_def() matches TOOL_ID against the TES API's returned tool list, raising when no entry matches."""
 
     def test_tes_url_finds_matching_tool(self):
+        """Select the tool definition whose tool_id matches TOOL_ID from the TES API's tool list."""
         tool_id = "target-tool"
         tools_list = [
             {"tool_id": "other-tool"},
@@ -1022,6 +1148,7 @@ class TestLoadToolDefTesUrlFixed:
         assert result["tool_id"] == tool_id
 
     def test_tes_url_not_found_falls_through_to_error(self):
+        """Raise RuntimeError when no tool in the TES API's response matches TOOL_ID."""
         env = {
             "TOOL_DEF_JSON": "",
             "TOOL_DEF_PATH": "",
@@ -1041,8 +1168,10 @@ class TestLoadToolDefTesUrlFixed:
 # 17. main() — Docker fallback when SIF fetch fails (lines 262-264, 381-383)
 # ===========================================================================
 class TestMainDockerFallback:
+    """main() falls back to direct (no-singularity) execution of the resolved command when the SIF image is unavailable but a docker_image is configured."""
 
     def test_docker_used_when_sif_missing_and_docker_image_set(self, tmp_path):
+        """Fall back to direct (non-singularity) execution when the SIF is missing but a docker_image is configured."""
         td = {
             "slurm": {
                 "image": "/nonexistent/tool.sif",
@@ -1061,6 +1190,7 @@ class TestMainDockerFallback:
         assert args[0] != "singularity"
 
     def test_docker_fallback_prints_message(self, tmp_path, capsys):
+        """Log the Docker-fallback decision when the SIF is unavailable."""
         td = {
             "slurm": {
                 "image": "/nonexistent/tool.sif",
@@ -1077,6 +1207,7 @@ class TestMainDockerFallback:
         assert "Docker" in capsys.readouterr().out
 
     def test_direct_exec_uses_resolved_command(self, tmp_path):
+        """Execute the resolved command directly (no singularity wrapper) in the Docker-fallback path."""
         td = {
             "slurm": {
                 "image": "/nonexistent/tool.sif",
@@ -1098,8 +1229,10 @@ class TestMainDockerFallback:
 # 18. main() — arch mismatch forces Docker (lines 375-376)
 # ===========================================================================
 class TestMainArchMismatch:
+    """main() forces the Docker fallback when the SIF filename's architecture suffix does not match the host's actual architecture."""
 
     def test_arm64_sif_on_x86_uses_docker(self, tmp_path):
+        """Fall back to Docker when an arm64-named SIF is run on an x86_64 host."""
         sif = tmp_path / "tool_arm64.sif"
         sif.write_bytes(b"fake")
         td = {
@@ -1121,6 +1254,7 @@ class TestMainArchMismatch:
         assert args[0] != "singularity"
 
     def test_amd64_sif_on_aarch64_uses_docker(self, tmp_path):
+        """Fall back to Docker when an amd64-named SIF is run on an aarch64 host."""
         sif = tmp_path / "tool_amd64.sif"
         sif.write_bytes(b"fake")
         td = {
@@ -1142,6 +1276,7 @@ class TestMainArchMismatch:
         assert args[0] != "singularity"
 
     def test_arch_mismatch_prints_message(self, tmp_path, capsys):
+        """Log the arch-mismatch decision when falling back to Docker."""
         sif = tmp_path / "tool_arm64.sif"
         sif.write_bytes(b"fake")
         td = {
@@ -1165,6 +1300,7 @@ class TestMainArchMismatch:
 # 19. main() — S3 input download (lines 273-307)
 # ===========================================================================
 def _make_s3_mock():
+    """Build a mocked boto3 module whose S3 client's paginator lists one object."""
     mock_boto3 = MagicMock()
     mock_s3_client = MagicMock()
     mock_boto3.client.return_value = mock_s3_client
@@ -1177,8 +1313,10 @@ def _make_s3_mock():
 
 
 class TestMainS3Input:
+    """main() downloads s3:// input values (single file or directory) into the work directory before resolving the command, falling back to the original URI on download failure."""
 
     def test_s3_single_file_input_downloaded(self, tmp_path):
+        """Download a single s3:// input file into the work directory before running the tool."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1197,6 +1335,7 @@ class TestMainS3Input:
         )
 
     def test_s3_directory_input_downloaded_trailing_slash(self, tmp_path):
+        """Treat an s3:// input ending in "/" as a directory and download it via list_objects_v2."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1212,6 +1351,7 @@ class TestMainS3Input:
         mock_s3_client.get_paginator.assert_called_with("list_objects_v2")
 
     def test_s3_directory_input_no_suffix_treated_as_dir(self, tmp_path):
+        """Treat an s3:// input with no file extension as a directory and download it via list_objects_v2."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1227,6 +1367,7 @@ class TestMainS3Input:
         mock_s3_client.get_paginator.assert_called_with("list_objects_v2")
 
     def test_s3_download_failure_falls_back_to_original_uri(self, tmp_path):
+        """Fall back to the original s3:// URI (and continue the run) when a single-file S3 download fails."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1242,6 +1383,7 @@ class TestMainS3Input:
         assert rc == 0
 
     def test_s3_dir_download_failure_falls_back(self, tmp_path):
+        """Fall back to the original s3:// URI (and continue the run) when an S3 directory listing fails."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1263,8 +1405,10 @@ class TestMainS3Input:
 # 20. main() — Azure input download (lines 309-334)
 # ===========================================================================
 class TestMainAzureInput:
+    """main() downloads azureblob:// input values into the work directory before resolving the command, falling back to the original URI on download failure."""
 
     def _make_azure_input_mocks(self, data=b"bam-data"):
+        """Build mocked BlobServiceClient constructor and instance wired to return the given blob data."""
         mock_blob_data = MagicMock()
         mock_blob_data.readall.return_value = data
         mock_bc = MagicMock()
@@ -1277,6 +1421,7 @@ class TestMainAzureInput:
         return mock_bsc_cls, mock_svc
 
     def test_azure_input_downloaded_with_connection_string(self, tmp_path):
+        """Download an azureblob:// input via from_connection_string when AZURE_STORAGE_CONNECTION_STRING is set."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1296,6 +1441,7 @@ class TestMainAzureInput:
         mock_bsc_cls.from_connection_string.assert_called_once()
 
     def test_azure_input_downloaded_with_managed_identity(self, tmp_path):
+        """Download an azureblob:// input via DefaultAzureCredential when no connection string is set."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1313,6 +1459,7 @@ class TestMainAzureInput:
         assert rc == 0
 
     def test_azure_input_download_failure_falls_back(self, tmp_path):
+        """Fall back to the original azureblob:// URI (and continue the run) when the Azure download fails."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1334,8 +1481,10 @@ class TestMainAzureInput:
 # 21. main() — GCS input download (lines 336-352)
 # ===========================================================================
 class TestMainGCSInput:
+    """main() downloads gs:// input values into the work directory before resolving the command, falling back to the original URI on download failure, and never logs the raw URI."""
 
     def _make_gcs_input_mock():
+        """Build a mocked google.cloud.storage client/bucket/blob chain for a GCS input download."""
         mock_blob = MagicMock()
         mock_bucket = MagicMock()
         mock_bucket.blob.return_value = mock_blob
@@ -1346,6 +1495,7 @@ class TestMainGCSInput:
         return mock_storage, mock_blob
 
     def test_gcs_input_downloaded(self, tmp_path):
+        """Download a gs:// input file into the work directory before running the tool."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1365,6 +1515,7 @@ class TestMainGCSInput:
         mock_storage.Client.return_value.bucket.assert_called_with("bucket")
 
     def test_gcs_input_download_failure_falls_back(self, tmp_path):
+        """Fall back to the original gs:// URI (and continue the run) when the GCS download fails."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1409,8 +1560,10 @@ class TestMainGCSInput:
 # 22. main() — GCS result upload (lines 445-463)
 # ===========================================================================
 class TestMainGCSResultUpload:
+    """main() uploads the run result to a gs:// RESULT_URI via google-cloud-storage's blob.upload_from_string, with the correct bucket/blob/content-type."""
 
     def _run_with_gcs_upload(self, tmp_path, result_uri):
+        """Run main() with a mocked successful subprocess and a mocked google-cloud-storage module, for a given gs:// RESULT_URI."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}
@@ -1434,25 +1587,30 @@ class TestMainGCSResultUpload:
         return rc, mock_blob
 
     def test_gcs_result_upload_called(self, tmp_path):
+        """Call blob.upload_from_string exactly once for a gs:// RESULT_URI."""
         rc, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
         assert rc == 0
         mock_blob.upload_from_string.assert_called_once()
 
     def test_gcs_result_upload_content_type_is_json(self, tmp_path):
+        """Upload the GCS result with content_type application/json."""
         _, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
         _, kwargs = mock_blob.upload_from_string.call_args
         assert kwargs.get("content_type") == "application/json"
 
     def test_gcs_result_upload_content_is_bytes(self, tmp_path):
+        """Upload the GCS result body as bytes, not a str."""
         _, mock_blob = self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
         args, _ = mock_blob.upload_from_string.call_args
         assert isinstance(args[0], bytes)
 
     def test_gcs_result_upload_prints_confirmation(self, tmp_path, capsys):
+        """Print an "uploaded" confirmation message after a successful GCS result upload."""
         self._run_with_gcs_upload(tmp_path, "gs://my-bucket/results.json")
         assert "uploaded" in capsys.readouterr().out
 
     def test_gcs_result_upload_uses_correct_bucket(self, tmp_path):
+        """Look up the exact bucket name parsed from the gs:// RESULT_URI."""
         sif = tmp_path / "tool.sif"
         sif.write_bytes(b"fake")
         td = {"slurm": {"image": str(sif), "command": ["echo", "hi"], "outputs": []}}

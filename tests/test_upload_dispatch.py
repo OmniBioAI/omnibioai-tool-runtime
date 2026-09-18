@@ -1,3 +1,6 @@
+"""Dispatch of upload_to_result_uri() to the correct cloud uploader implementation based on RESULT_URI scheme.
+
+Developer: Manish Kumar <manish@omnibioai.org>"""
 # tests/test_upload_dispatch.py
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ import omni_tool_runtime.upload_result as mod
 
 
 class _S3Spy:
+    """Fake S3Uploader that records upload_bytes() calls instead of touching AWS."""
     def __init__(self, aws_profile=None):
         self.aws_profile = aws_profile
         self.calls = []
@@ -26,6 +30,7 @@ class _S3Spy:
 
 
 class _AzureSpy:
+    """Fake AzureBlobUploader that records upload_bytes() calls instead of touching Azure."""
     def __init__(self, account_name: str, auth: str = "managed_identity", connection_string=None):
         self.account_name = account_name
         self.auth = auth
@@ -49,6 +54,7 @@ class _AzureSpy:
 
 
 def test_upload_dispatch_to_s3(monkeypatch: pytest.MonkeyPatch):
+    """Route an s3:// RESULT_URI to S3Uploader with the parsed bucket/key and given aws_profile."""
     _s3_spy = _S3Spy(aws_profile="prof1")
 
     # Patch constructor used inside upload_to_result_uri
@@ -79,6 +85,7 @@ def test_upload_dispatch_to_s3(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_upload_dispatch_to_azureblob(monkeypatch: pytest.MonkeyPatch):
+    """Route an azureblob:// RESULT_URI to AzureBlobUploader with the parsed account/container/blob_path and given auth settings."""
     created = {}
 
     def _ctor(account_name: str, auth: str = "managed_identity", connection_string=None):
@@ -113,6 +120,7 @@ def test_upload_dispatch_to_azureblob(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_upload_unsupported_scheme_raises():
+    """Reject an unsupported RESULT_URI scheme before any uploader is constructed."""
     with pytest.raises(ValueError):
         mod.upload_to_result_uri(result_uri="ftp://bucket/key", data=b"x")
 
