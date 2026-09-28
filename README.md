@@ -107,8 +107,8 @@ omnibioai-tool-runtime/
 cd ~/Desktop/machine/omnibioai-tool-runtime
 pytest tests/ -v --cov=.
 
-# 99% coverage (verified 2026-08-07; 371 tests. Two lines in
-# generic_sif_runner/run.py are the only gap)
+# Coverage figures from earlier dated runs are historical snapshots; run the
+# command above to measure the current checkout.
 # Covers: upload_result, S3 uploader, Azure uploader,
 #         echo_test/generic_sif_runner/workflow_runner tools, run lifecycle
 ```
@@ -333,6 +333,11 @@ tools:
 - No state machine
 - No scheduling policy
 
+The items above describe implemented runtime behavior and intentional
+boundaries. Backend availability, tool identity, and scheduler policy are
+owned by TES adapters and structured configuration, not by this runtime
+README.
+
 ---
 
 ## Design Philosophy (Important)
@@ -358,6 +363,14 @@ Everything complex belongs **above** this layer.
 | `omnibioai-tool-images` | Embeds this runtime in every tool Docker image |
 | `omnibioai-studio` | Orchestrates execution backends that run this runtime |
 
+## Authoritative Sources
+
+The execution contract is implemented in `omni_tool_runtime/contract.py`,
+`run.py`, `result_uri.py`, and `upload_result.py`. Backend-specific uploaders
+are under `omni_tool_runtime/uploaders/`; the reference and embedded tools are
+under `tools/`. TES configuration determines which tool image and backend are
+selected. This repository does not define the canonical TES tool catalog.
+
 ---
 
 ## Final Note
@@ -371,4 +384,3 @@ If this runtime feels similar to:
 That’s intentional.
 
 You’re building the **correct abstraction boundary**.
-
