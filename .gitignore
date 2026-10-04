@@ -33,6 +33,7 @@ pip-log.txt
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.json
 htmlcov/
 .tox/
 .nox/
