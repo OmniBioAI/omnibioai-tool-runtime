@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1
+# OmniBioAI — Tool Runtime Legacy
+# Purpose: Build the amd64 tool runtime with Java, Apptainer, and Nextflow.
+# Author: Manish Kumar <manish@omnibioai.org>
+
 FROM --platform=linux/amd64 python:3.11-slim-bookworm
 
 WORKDIR /app
 
+# Runtime configuration
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -42,11 +47,14 @@ RUN curl -s https://get.nextflow.io | bash \
     && chmod +x /usr/local/bin/nextflow \
     && nextflow -version
 
+# Application source
 COPY . /app
 
+# Python dependencies
 RUN pip install --upgrade pip \
  && pip install --no-cache-dir . \
  && pip install --no-cache-dir boto3 azure-identity azure-storage-blob \
  && python -c "import omni_tool_runtime; print('omni_tool_runtime import OK')"
 
+# Entrypoint and default command
 CMD ["python", "-m", "tools.echo_test.run"]
