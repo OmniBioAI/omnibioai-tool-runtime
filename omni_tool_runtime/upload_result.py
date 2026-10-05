@@ -1,4 +1,14 @@
 # omni_tool_runtime/upload_result.py
+"""
+OmniBioAI omni_tool_runtime.upload_result.
+
+Purpose:
+    Defines upload_to_result_uri for omni_tool_runtime.upload_result.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import os

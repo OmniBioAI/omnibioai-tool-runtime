@@ -1,4 +1,14 @@
 # omni_tool_runtime/uploaders/s3_uploader.py
+"""
+OmniBioAI omni_tool_runtime.uploaders.s3_uploader.
+
+Purpose:
+    Defines S3Uploader with upload_bytes methods for omni_tool_runtime.uploaders.s3_uploader.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

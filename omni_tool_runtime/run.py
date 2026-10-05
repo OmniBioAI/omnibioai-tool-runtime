@@ -1,3 +1,13 @@
+"""
+OmniBioAI omni_tool_runtime.run.
+
+Purpose:
+    Defines main for omni_tool_runtime.run.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import importlib

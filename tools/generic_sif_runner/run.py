@@ -1,4 +1,14 @@
 # tools/generic_sif_runner/run.py
+"""
+OmniBioAI tools.generic_sif_runner.run.
+
+Purpose:
+    Loads tool definitions, fetches SIF images, resolves commands and collects outputs for container-tool execution.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import json

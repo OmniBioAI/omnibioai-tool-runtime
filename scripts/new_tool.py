@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""
+OmniBioAI scripts.new_tool.
+
+Purpose:
+    Defines main for scripts.new_tool.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import re

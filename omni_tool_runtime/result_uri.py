@@ -1,4 +1,14 @@
 # omni_tool_runtime/result_uri.py
+"""
+OmniBioAI omni_tool_runtime.result_uri.
+
+Purpose:
+    Defines ParsedResultURI and parse_result_uri for omni_tool_runtime.result_uri.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

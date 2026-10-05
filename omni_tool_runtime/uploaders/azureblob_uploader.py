@@ -1,3 +1,13 @@
+"""
+OmniBioAI omni_tool_runtime.uploaders.azureblob_uploader.
+
+Purpose:
+    Defines AzureBlobUploader with upload_bytes methods for omni_tool_runtime.uploaders.azureblob_uploader.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

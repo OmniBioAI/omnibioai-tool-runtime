@@ -1,4 +1,14 @@
 # omni_tool_runtime/contract.py
+"""
+OmniBioAI omni_tool_runtime.contract.
+
+Purpose:
+    Defines ToolContract and read_contract_from_env for omni_tool_runtime.contract.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,4 +1,14 @@
 # tools/workflow_runner/run.py
+"""
+OmniBioAI tools.workflow_runner.run.
+
+Purpose:
+    Downloads workflow inputs, prepares execution commands, runs workflows and uploads collected results.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import hashlib

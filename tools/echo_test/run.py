@@ -1,4 +1,14 @@
 # tools/echo_test/run.py
+"""
+OmniBioAI tools.echo_test.run.
+
+Purpose:
+    Reads environment-defined inputs, echoes text and optionally uploads a JSON result.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import json
