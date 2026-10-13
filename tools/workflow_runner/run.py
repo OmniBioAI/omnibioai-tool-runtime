@@ -103,35 +103,19 @@ def _upload_uri(uri: str, data: bytes, content_type: str = "application/json") -
     """
     u = urlparse(uri)
 
-    if u.scheme == "s3":
-        import boto3  # type: ignore
-
-        bucket = u.netloc
-        key = u.path.lstrip("/")
-        if not bucket or not key:
+    if u.scheme in ("s3", "azureblob", "gs"):
+        from omni_tool_runtime.upload_result import upload_to_result_uri
+        if u.scheme == "s3" and (not u.netloc or not u.path.lstrip("/")):
             raise RuntimeError(f"Bad S3 URI: {uri}")
-        boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
-        return
-
-    if u.scheme == "azureblob":
-        from azure.storage.blob import BlobServiceClient  # type: ignore
-
-        path = u.path.lstrip("/")
-        if "/" not in path:
+        if u.scheme == "azureblob" and len(u.path.lstrip("/").split("/", 1)) != 2:
             raise RuntimeError(f"Bad azureblob URI (need container/blob): {uri}")
-        container, blob = path.split("/", 1)
-
-        cs = (
+        if u.scheme == "azureblob" and not (
             os.getenv("AZURE_STORAGE_CONNECTION_STRING")
             or os.getenv("OMNI_TOOL_RUNTIME_AZURE_CONNECTION_STRING")
-            or ""
-        )
-        if not cs:
+            or os.getenv("AZURE_AUTH") == "managed_identity"
+        ):
             raise RuntimeError("Missing AZURE_STORAGE_CONNECTION_STRING for azureblob upload")
-
-        svc = BlobServiceClient.from_connection_string(cs)
-        bc = svc.get_blob_client(container=container, blob=blob)
-        bc.upload_blob(data, overwrite=True, content_settings=None)
+        upload_to_result_uri(result_uri=uri, content=data, content_type=content_type)
         return
 
     if u.scheme in ("", "file"):

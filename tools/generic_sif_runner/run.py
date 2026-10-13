@@ -489,37 +489,15 @@ def main() -> int:
 
     # ── Upload result ─────────────────────────────────────────
     if result_uri:
-        if result_uri.startswith("gs://"):
-            from google.cloud import storage as gcs_storage
-            from urllib.parse import urlparse
-
-            u = urlparse(result_uri)
-            bucket_name = u.netloc
-            blob_path = u.path.lstrip("/")
-
-            print(f"[gcs] upload → gs://{bucket_name}/{blob_path}")
-
-            client = gcs_storage.Client()
-            bucket = client.bucket(bucket_name)
-            blob = bucket.blob(blob_path)
-
-            blob.upload_from_string(
-                body,
-                content_type="application/json"
-            )
-
-            print(f"[generic_sif_runner] uploaded → {result_uri}")
-
-        else:
-            upload_to_result_uri(
-                result_uri=result_uri,
-                content=body,
-                content_type="application/json",
-                aws_profile=_env("AWS_PROFILE") or None,
-                azure_auth=_env("AZURE_AUTH", "managed_identity"),
-                azure_connection_string=_env("AZURE_STORAGE_CONNECTION_STRING") or None,
-            )
-            print(f"[generic_sif_runner] uploaded → {result_uri}")
+        upload_to_result_uri(
+            result_uri=result_uri,
+            content=body,
+            content_type="application/json",
+            aws_profile=_env("AWS_PROFILE") or None,
+            azure_auth=_env("AZURE_AUTH", "managed_identity"),
+            azure_connection_string=_env("AZURE_STORAGE_CONNECTION_STRING") or None,
+        )
+        print(f"[generic_sif_runner] uploaded → {result_uri}")
 
     return 0 if ok else 1
 

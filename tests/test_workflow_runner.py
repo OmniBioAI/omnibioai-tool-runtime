@@ -86,7 +86,6 @@ def test_extract_tgz_and_run_command_boundaries(tmp_path, monkeypatch):
 
 def test_upload_rejects_bad_s3_and_unknown_schemes(monkeypatch):
     """Reject a malformed s3:// upload target and an unsupported RESULT_URI scheme."""
-    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda name: MagicMock()))
     with pytest.raises(RuntimeError, match="Bad S3 URI"):
         runner._upload_uri("s3://bucket", b"data")
     with pytest.raises(RuntimeError, match="Unsupported RESULT_URI scheme"):
@@ -111,10 +110,11 @@ def test_upload_local_and_s3_boundaries(tmp_path, monkeypatch):
     assert local.read_bytes() == b"local"
 
     client = MagicMock()
-    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda name: client))
+    from omni_tool_runtime import upload_result
+    monkeypatch.setattr(upload_result.S3Uploader, "upload_bytes", lambda self, **kwargs: client.put_object(**kwargs))
     runner._upload_uri("s3://bucket/path/results.json", b"cloud", "text/plain")
     client.put_object.assert_called_once_with(
-        Bucket="bucket", Key="path/results.json", Body=b"cloud", ContentType="text/plain",
+        bucket="bucket", key="path/results.json", data=b"cloud", content_type="text/plain",
     )
 
 
@@ -124,6 +124,8 @@ def test_upload_azure_requires_valid_uri_and_connection(monkeypatch):
     azure_blob = SimpleNamespace(BlobServiceClient=blob_service)
     monkeypatch.setitem(sys.modules, "azure.storage.blob", azure_blob)
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "UseDevelopmentStorage=true")
+    from omni_tool_runtime import upload_result
+    monkeypatch.setattr(upload_result.AzureBlobUploader, "_client", lambda self: blob_service.from_connection_string("UseDevelopmentStorage=true"))
 
     runner._upload_uri("azureblob://account/container/path/results.json", b"data")
     blob_service.from_connection_string.assert_called_once_with("UseDevelopmentStorage=true")
