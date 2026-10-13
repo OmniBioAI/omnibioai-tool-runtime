@@ -15,9 +15,9 @@ import os
 from urllib.parse import urlparse
 
 from omni_tool_runtime.result_uri import parse_result_uri
+from omni_tool_runtime.storage_admission import LedgerHTTPClient, publish_managed_output
 from omni_tool_runtime.uploaders.azureblob_uploader import AzureBlobUploader
 from omni_tool_runtime.uploaders.s3_uploader import S3Uploader
-from omni_tool_runtime.storage_admission import LedgerHTTPClient, publish_managed_output
 
 
 def _normalize_result_uri(result_uri: str) -> str:
@@ -163,7 +163,13 @@ def upload_to_result_uri(
             max_bytes = 0
         if not resolved_run or max_bytes <= 0:
             raise RuntimeError("managed output requires run identity and bounded capacity")
-        output_id = f"{scheme}:{urlparse(normalized_uri).netloc}{urlparse(normalized_uri).path}"
+        # TES provisions a stable one-output allocation before scheduling.
+        # Deriving identity from the destination used to produce a slash-
+        # containing value that the Ledger correctly rejects as an invalid
+        # run/output identifier.
+        output_id = os.environ.get("TES_STORAGE_OUTPUT_ID", "")
+        if not output_id:
+            raise RuntimeError("managed output requires a TES-provisioned output identity")
         publish_managed_output(admission=provider, run_id=resolved_run,
             output_id=output_id, destination=normalized_uri, backend=scheme,
             content=payload, max_bytes=max_bytes, publish=_write)

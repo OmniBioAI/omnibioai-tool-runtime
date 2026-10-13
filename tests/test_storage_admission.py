@@ -85,3 +85,53 @@ def test_write_exception_leaves_hold_for_reconciliation_without_premature_releas
             content=b"actual", max_bytes=20, publish=ambiguous_write,
         )
     assert [call[0] for call in ledger.calls] == ["reserve", "start"]
+
+
+def test_http_writer_client_allows_plain_http_only_for_test_loopback(monkeypatch):
+    from omni_tool_runtime.storage_admission import LedgerHTTPClient
+
+    with pytest.raises(AdmissionError):
+        LedgerHTTPClient("http://example.invalid", "cap")
+    with pytest.raises(AdmissionError):
+        LedgerHTTPClient("http://127.0.0.1:8000", "cap")
+    monkeypatch.setenv("TES_STORAGE_TEST_ALLOW_HTTP_LOOPBACK", "1")
+    client = LedgerHTTPClient("http://127.0.0.1:8000", "cap")
+    assert client.base_url == "http://127.0.0.1:8000"
+
+
+def test_http_writer_never_forwards_capability_on_redirect(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    from omni_tool_runtime.storage_admission import LedgerHTTPClient
+
+    received = []
+    class Redirect(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/untrusted-target")
+            self.end_headers()
+
+        def do_GET(self):
+            received.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setenv("TES_STORAGE_TEST_ALLOW_HTTP_LOOPBACK", "1")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = LedgerHTTPClient(f"http://127.0.0.1:{server.server_port}", "isolated-capability")
+        with pytest.raises(AdmissionError):
+            client.status(allocation_id="test")
+        assert received == ["/api/storage/tes/status"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
