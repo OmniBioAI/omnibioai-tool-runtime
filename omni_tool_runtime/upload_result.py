@@ -15,6 +15,7 @@ import os
 from urllib.parse import urlparse
 
 from omni_tool_runtime.result_uri import parse_result_uri
+from omni_tool_runtime.storage_admission import LedgerHTTPClient, publish_managed_output
 from omni_tool_runtime.uploaders.azureblob_uploader import AzureBlobUploader
 from omni_tool_runtime.uploaders.s3_uploader import S3Uploader
 
@@ -83,6 +84,10 @@ def upload_to_result_uri(
     # ---- Azure overrides (new; optional) ----
     azure_auth: str = "managed_identity",
     azure_connection_string: str | None = None,
+    storage_classification: str | None = None,
+    admission=None,
+    run_id: str | None = None,
+    max_admitted_bytes: int | None = None,
 ) -> None:
     """
     Upload bytes to RESULT_URI.
@@ -111,63 +116,67 @@ def upload_to_result_uri(
     info = parse_result_uri(normalized_uri)
     scheme = getattr(info, "scheme", None) or urlparse(normalized_uri).scheme
 
-    if scheme == "s3":
-        bucket, key = _parse_s3(normalized_uri)
-        prof = aws_profile if aws_profile is not None else (os.getenv("AWS_PROFILE") or None)
+    def _write() -> None:
+        nonlocal azure_auth, azure_connection_string
+        if scheme == "s3":
+            bucket, key = _parse_s3(normalized_uri)
+            prof = aws_profile if aws_profile is not None else (os.getenv("AWS_PROFILE") or None)
+            S3Uploader(aws_profile=prof).upload_bytes(bucket=bucket, key=key, data=payload,
+                                                       content_type=content_type)
+            return
+        if scheme == "azureblob":
+            account, container, blob_path = _parse_azureblob(normalized_uri)
+            if azure_auth == "managed_identity":
+                azure_auth = os.getenv("AZURE_AUTH", "managed_identity")
+            if azure_connection_string is None:
+                azure_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+            if azure_connection_string and azure_auth == "managed_identity":
+                azure_auth = "connection_string"
+            AzureBlobUploader(account_name=account, auth=azure_auth,
+                              connection_string=azure_connection_string).upload_bytes(
+                container=container, blob_path=blob_path, data=payload, content_type=content_type)
+            return
+        if scheme == "gs":
+            u = urlparse(normalized_uri)
+            bucket_name, blob_path = u.netloc, u.path.lstrip("/")
+            if not bucket_name or not blob_path:
+                raise ValueError(f"Invalid gs:// URI (empty bucket/path): {normalized_uri}")
+            try:
+                from google.cloud import storage as gcs_storage
+            except ImportError as exc:
+                raise RuntimeError("google-cloud-storage not installed. Run: pip install google-cloud-storage") from exc
+            gcs_storage.Client().bucket(bucket_name).blob(blob_path).upload_from_string(
+                payload, content_type=content_type)
+            return
+        raise ValueError(f"Unsupported RESULT_URI scheme: {scheme}")
 
-        S3Uploader(aws_profile=prof).upload_bytes(
-            bucket=bucket,
-            key=key,
-            data=payload,
-            content_type=content_type,
-        )
-        return
-
-    if scheme == "azureblob":
-        account, container, blob_path = _parse_azureblob(normalized_uri)
-
-        # ---- ENV FALLBACKS (so tools can stay simple) ----
-        if azure_auth == "managed_identity":
-            azure_auth = os.getenv("AZURE_AUTH", "managed_identity")
-
-        if azure_connection_string is None:
-            azure_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-
-        # ADD THIS (new)
-        if azure_connection_string and azure_auth == "managed_identity":
-            azure_auth = "connection_string"
-
-        uploader = AzureBlobUploader(
-            account_name=account,
-            auth=azure_auth,
-            connection_string=azure_connection_string,
-        )
-
-        uploader.upload_bytes(
-            container=container,
-            blob_path=blob_path,
-            data=payload,
-            content_type=content_type,
-        )
-        return
-
-    if scheme == "gs":
-        u = urlparse(normalized_uri)
-        bucket_name = u.netloc
-        blob_path = u.path.lstrip("/")
-        if not bucket_name or not blob_path:
-            raise ValueError(f"Invalid gs:// URI (empty bucket/path): {normalized_uri}")
+    # TES sets this explicitly for managed publications. Unknown classifications
+    # never inherit managed privileges; callers without this opt-in retain the
+    # legacy uploader behavior for customer-owned/external destinations.
+    classification = storage_classification or os.getenv("TES_STORAGE_CLASSIFICATION")
+    if classification == "managed_persistent":
+        provider = admission or LedgerHTTPClient.from_environment()
+        resolved_run = run_id or os.getenv("RUN_ID", "")
         try:
-            from google.cloud import storage as gcs_storage
-        except ImportError as exc:
-            raise RuntimeError(
-                "google-cloud-storage not installed. "
-                "Run: pip install google-cloud-storage"
-            ) from exc
-        client = gcs_storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_string(payload, content_type=content_type)
+            max_bytes = max_admitted_bytes or int(os.environ.get("TES_STORAGE_MAX_ADMITTED_BYTES", "0"))
+        except ValueError:
+            max_bytes = 0
+        if not resolved_run or max_bytes <= 0:
+            raise RuntimeError("managed output requires run identity and bounded capacity")
+        # TES provisions a stable one-output allocation before scheduling.
+        # Deriving identity from the destination used to produce a slash-
+        # containing value that the Ledger correctly rejects as an invalid
+        # run/output identifier.
+        output_id = os.environ.get("TES_STORAGE_OUTPUT_ID", "")
+        if not output_id:
+            raise RuntimeError("managed output requires a TES-provisioned output identity")
+        publish_managed_output(admission=provider, run_id=resolved_run,
+            output_id=output_id, destination=normalized_uri, backend=scheme,
+            content=payload, max_bytes=max_bytes, publish=_write)
         return
-
-    raise ValueError(f"Unsupported RESULT_URI scheme: {scheme}")
+    if classification is not None and classification not in {
+        "customer_owned", "external", "scratch"
+    }:
+        raise RuntimeError("unclassified TES output destination")
+    _write()
+    return
