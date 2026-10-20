@@ -104,7 +104,7 @@ omnibioai-tool-runtime/
 ## Testing
 
 ```bash
-cd ~/Desktop/machine/omnibioai-tool-runtime
+cd ~/Desktop/omnibioai-ecosystem/omnibioai-tool-runtime
 pytest tests/ -v --cov=.
 
 # Coverage figures from earlier dated runs are historical snapshots; run the
@@ -186,7 +186,7 @@ From repository root:
 
 ```bash
 # Build from ecosystem root (required — COPY needs omnibioai-tool-runtime/)
-cd ~/Desktop/machine
+cd ~/Desktop/omnibioai-ecosystem
 docker build \
   -t ghcr.io/omnibioai/omnibioai-tool-runtime:latest \
   -f omnibioai-tool-runtime/Dockerfile \
