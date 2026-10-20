@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import ipaddress
 import os
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -47,23 +49,48 @@ class LedgerAdmission(Protocol):
 class LedgerHTTPClient:
     """Small stdlib HTTP client; no credentials are included in errors/logs."""
 
-    def __init__(self, base_url: str, bearer: str, *, timeout: float = 5.0):
-        if not base_url.startswith("https://") or not bearer:
+    def __init__(self, base_url: str, bearer: str, *, timeout: float = 5.0,
+                 allocation_id: str = "", run_id: str = "", output_id: str = "",
+                 destination: str = "", max_bytes: int = 0):
+        parsed = urlsplit(base_url)
+        test_http = os.environ.get("TES_STORAGE_TEST_ALLOW_HTTP_LOOPBACK") == "1"
+        try:
+            loopback = parsed.hostname == "localhost" or bool(
+                parsed.hostname and ipaddress.ip_address(parsed.hostname).is_loopback
+            )
+        except ValueError:
+            loopback = False
+        secure_scheme = parsed.scheme == "https" or (
+            test_http and parsed.scheme == "http" and loopback
+        )
+        if not secure_scheme or not bearer:
             raise AdmissionError("managed output admission configuration is invalid")
         self.base_url = base_url.rstrip("/")
         self.bearer = bearer
         self.timeout = timeout
+        self.allocation_id, self.run_id, self.output_id = allocation_id, run_id, output_id
+        self.destination, self.max_bytes = destination, max_bytes
 
     @classmethod
     def from_environment(cls) -> "LedgerHTTPClient":
+        try:
+            max_bytes = int(os.environ.get("TES_STORAGE_MAX_ADMITTED_BYTES", "0"))
+        except ValueError:
+            max_bytes = 0
         return cls(os.environ.get("TES_STORAGE_LEDGER_URL", ""),
-                   os.environ.get("TES_STORAGE_ADMISSION_TOKEN", ""))
+                   os.environ.get("TES_STORAGE_ADMISSION_TOKEN", ""),
+                   allocation_id=os.environ.get("TES_STORAGE_ALLOCATION_ID", ""),
+                   run_id=os.environ.get("RUN_ID", ""),
+                   output_id=os.environ.get("TES_STORAGE_OUTPUT_ID", ""),
+                   destination=os.environ.get("RESULT_URI", ""), max_bytes=max_bytes)
 
     def _call(self, action: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {"allocation_id": self.allocation_id, "run_id": self.run_id,
+                   "output_id": self.output_id, "destination": self.destination, **(body or {})}
         request = Request(
             f"{self.base_url}/api/storage/tes/{action}",
-            data=json.dumps(body or {}).encode("utf-8"),
-            headers={"Authorization": f"Bearer {self.bearer}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"X-TES-Storage-Capability": f"Bearer {self.bearer}",
                      "Content-Type": "application/json"},
             method="POST",
         )
@@ -81,14 +108,15 @@ class LedgerHTTPClient:
         return payload
 
     def reserve(self, **values: Any) -> OutputAdmission:
-        result = self._call("reserve", values)
-        try:
-            return OutputAdmission(str(result["allocation_id"]), int(result["max_bytes"]),
-                                   str(result["idempotency_key"]),
-                                   str(result.get("state", "RESERVED")),
-                                   int(result.get("actual_bytes", 0)))
-        except (KeyError, TypeError, ValueError):
-            raise AdmissionUnknown("Storage Ledger returned an incomplete reservation") from None
+        if (not self.allocation_id or values.get("run_id") != self.run_id
+                or values.get("output_id") != self.output_id
+                or values.get("destination") != self.destination
+                or values.get("max_bytes") != self.max_bytes):
+            raise AdmissionError("TES did not provision a matching run-scoped allocation")
+        result = self._call("status", {"idempotency_key": values["idempotency_key"]})
+        return OutputAdmission(self.allocation_id, self.max_bytes,
+            str(values["idempotency_key"]), str(result.get("state", "UNKNOWN")),
+            int(result.get("actual_bytes", 0)))
 
     def start(self, **values: Any) -> None: self._call("start", values)
     def commit(self, **values: Any) -> None: self._call("commit", values)

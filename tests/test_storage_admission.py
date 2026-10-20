@@ -85,3 +85,15 @@ def test_write_exception_leaves_hold_for_reconciliation_without_premature_releas
             content=b"actual", max_bytes=20, publish=ambiguous_write,
         )
     assert [call[0] for call in ledger.calls] == ["reserve", "start"]
+
+
+def test_http_writer_client_allows_plain_http_only_for_test_loopback(monkeypatch):
+    from omni_tool_runtime.storage_admission import LedgerHTTPClient
+
+    with pytest.raises(AdmissionError):
+        LedgerHTTPClient("http://example.invalid", "cap")
+    with pytest.raises(AdmissionError):
+        LedgerHTTPClient("http://127.0.0.1:8000", "cap")
+    monkeypatch.setenv("TES_STORAGE_TEST_ALLOW_HTTP_LOOPBACK", "1")
+    client = LedgerHTTPClient("http://127.0.0.1:8000", "cap")
+    assert client.base_url == "http://127.0.0.1:8000"
